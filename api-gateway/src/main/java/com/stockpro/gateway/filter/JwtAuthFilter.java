@@ -11,6 +11,7 @@ import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpResponse;
@@ -57,6 +58,10 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
         ServerHttpRequest request = exchange.getRequest();
         String path = request.getURI().getPath();
+
+        if (request.getMethod() == HttpMethod.OPTIONS) {
+            return chain.filter(exchange);
+        }
 
         // Step 1: Check whitelist - if path is login or register, skip JWT check
         if (isWhitelisted(path)) {
