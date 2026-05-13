@@ -132,6 +132,14 @@ public class SupplierResource {
                 "supplierId", String.valueOf(id)));
     }
 
+    @PutMapping("/{id}/activate")
+    public ResponseEntity<Map<String, String>> activateSupplier(@PathVariable int id) {
+        supplierService.activateSupplier(id);
+        return ResponseEntity.ok(Map.of(
+                "message", "Supplier activated successfully",
+                "supplierId", String.valueOf(id)));
+    }
+
 
 //      DELETE /api/suppliers/{id}
 //      Hard delete — permanently removes the supplier record.

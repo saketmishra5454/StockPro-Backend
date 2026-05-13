@@ -26,6 +26,8 @@ public interface SupplierService {
     // Deactivated suppliers cannot receive new POs
     void deactivateSupplier(int supplierId);
 
+    void activateSupplier(int supplierId);
+
     // Hard delete — permanently removes the record
     // Use only for suppliers with no PO history
     void deleteSupplier(int supplierId);

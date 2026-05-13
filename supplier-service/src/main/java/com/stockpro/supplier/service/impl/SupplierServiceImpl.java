@@ -129,6 +129,15 @@ public class SupplierServiceImpl implements SupplierService {
         log.info("Supplier deactivated: id={}, name={}", supplierId, supplier.getName());
     }
 
+    @Override
+    @Transactional
+    public void activateSupplier(int supplierId) {
+        Supplier supplier = getById(supplierId);
+        supplier.setActive(true);
+        supplierRepository.save(supplier);
+        log.info("Supplier activated: id={}, name={}", supplierId, supplier.getName());
+    }
+
 
     @Override
     @Transactional
