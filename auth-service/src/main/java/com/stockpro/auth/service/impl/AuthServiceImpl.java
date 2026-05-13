@@ -150,6 +150,16 @@ public class AuthServiceImpl implements AuthService {
     }
 
     /**
+     * Activate user - restores access after a soft delete.
+     */
+    @Override
+    public void activateUser(int userId) {
+        User user = getUserById(userId);
+        user.setActive(true);
+        userRepository.save(user);
+    }
+
+    /**
      * Get all users - typically called by Admin only.
      * The role check (ADMIN) is done in the controller layer.
      */

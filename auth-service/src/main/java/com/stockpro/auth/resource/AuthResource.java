@@ -162,4 +162,16 @@ public class AuthResource {
         authService.deactivateUser(id);
         return ResponseEntity.ok(Map.of("message", "User deactivated successfully"));
     }
+
+    /**
+     * PUT /api/auth/activate/{id}
+     * Restore a deactivated user account (sets isActive = true).
+     *
+     * Response: { "message": "User activated successfully" }
+     */
+    @PutMapping("/activate/{id}")
+    public ResponseEntity<Map<String, String>> activateUser(@PathVariable int id) {
+        authService.activateUser(id);
+        return ResponseEntity.ok(Map.of("message", "User activated successfully"));
+    }
 }

@@ -35,6 +35,9 @@ public interface AuthService {
     // Soft delete - sets isActive = false, user cannot login anymore
     void deactivateUser(int userId);
 
+    // Restore access - sets isActive = true, user can login again
+    void activateUser(int userId);
+
     // Get all users - Admin only
     List<User> getAllUsers();
 }
