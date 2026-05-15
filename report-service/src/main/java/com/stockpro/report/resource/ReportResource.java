@@ -13,25 +13,12 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
-
-// * ReportResource — REST controller for all analytics endpoints.
-// * Base path: /api/reports
-
 @RestController
 @RequestMapping("/api/reports")
 @RequiredArgsConstructor
 public class ReportResource {
 
     private final ReportService reportService;
-
-    // ══════════════════════════════════════════════════════════════
-    // SNAPSHOT
-    // ══════════════════════════════════════════════════════════════
-
-
-//     * POST /api/reports/snapshot/{warehouseId}
-//     * Used when first setting up a warehouse (before midnight scheduler runs).
-//     * e.g. POST /api/reports/snapshot/1
 
     @PostMapping("/snapshot/{warehouseId}")
     public ResponseEntity<Map<String, String>> takeSnapshot(@PathVariable int warehouseId) {
@@ -41,9 +28,6 @@ public class ReportResource {
                         "Snapshot taken for warehouse " + warehouseId));
     }
 
-//      POST /api/reports/snapshot/all
-//      Manually trigger snapshots for all warehouses.
-
     @PostMapping("/snapshot/all")
     public ResponseEntity<Map<String, String>> takeSnapshotAll() {
         reportService.takeSnapshotAllWarehouses();
@@ -51,23 +35,11 @@ public class ReportResource {
                 .body(Map.of("message", "Snapshot taken for all warehouses"));
     }
 
-
-//      GET /api/reports/snapshot/{warehouseId}
-//      Get today's snapshot for a warehouse.
-
     @GetMapping("/snapshot/{warehouseId}")
     public ResponseEntity<List<InventorySnapshot>> getLatestSnapshot(
             @PathVariable int warehouseId) {
         return ResponseEntity.ok(reportService.getLatestSnapshot(warehouseId));
     }
-
-    // ══════════════════════════════════════════════════════════════
-    // VALUATION
-    // ══════════════════════════════════════════════════════════════
-
-
-//     * GET /api/reports/stock-value/total
-//     * Get total inventory value across ALL warehouses.
 
     @GetMapping("/stock-value/total")
     public ResponseEntity<Map<String, Object>> getTotalStockValue() {
@@ -78,10 +50,6 @@ public class ReportResource {
                 "asOf", LocalDate.now().toString()));
     }
 
-
-//      GET /api/reports/stock-value/warehouse/{warehouseId}
-//      Get stock value for one warehouse.
-
     @GetMapping("/stock-value/warehouse/{warehouseId}")
     public ResponseEntity<Map<String, Object>> getStockValueByWarehouse(
             @PathVariable int warehouseId) {
@@ -91,14 +59,6 @@ public class ReportResource {
                 "stockValue", value,
                 "asOf", LocalDate.now().toString()));
     }
-
-    // ══════════════════════════════════════════════════════════════
-    // INVENTORY TURNOVER
-    // ══════════════════════════════════════════════════════════════
-
-
-//      GET /api/reports/turnover/{warehouseId}?from=2026-01-01&to=2026-04-30
-//      Calculate inventory turnover rate for a warehouse and date range.
 
     @GetMapping("/turnover/{warehouseId}")
     public ResponseEntity<Map<String, Object>> getInventoryTurnover(
@@ -118,21 +78,10 @@ public class ReportResource {
                         : "Insufficient data for turnover calculation"));
     }
 
-    // ══════════════════════════════════════════════════════════════
-    // PRODUCT MOVEMENT REPORTS
-    // ══════════════════════════════════════════════════════════════
-
-
-//     * GET /api/reports/low-stock
-//     * Low stock report — products currently below reorder level.
-
     @GetMapping("/low-stock")
     public ResponseEntity<List<Map<String, Object>>> getLowStockReport() {
         return ResponseEntity.ok(reportService.getLowStockReport());
     }
-
-    //      GET /api/reports/top-moving?limit=10
-//     Top moving products ranked by total units moved in last 30 days.
 
     @GetMapping("/top-moving")
     public ResponseEntity<List<ProductMovementSummary>> getTopMovingProducts(
@@ -140,33 +89,17 @@ public class ReportResource {
         return ResponseEntity.ok(reportService.getTopMovingProducts(limit));
     }
 
-
-//     * GET /api/reports/slow-moving?limit=10
-//     * Slow moving products — minimal movement in last 30 days.
-
     @GetMapping("/slow-moving")
     public ResponseEntity<List<ProductMovementSummary>> getSlowMovingProducts(
             @RequestParam(defaultValue = "10") int limit) {
         return ResponseEntity.ok(reportService.getSlowMovingProducts(limit));
     }
 
-    /**
-     * GET /api/reports/dead-stock
-     * Dead stock — no movement in 90+ days.
-     */
+
     @GetMapping("/dead-stock")
     public ResponseEntity<List<InventorySnapshot>> getDeadStock() {
         return ResponseEntity.ok(reportService.getDeadStock());
     }
-
-    // ══════════════════════════════════════════════════════════════
-    // PO SUMMARY
-    // ══════════════════════════════════════════════════════════════
-
-
-//      GET /api/reports/po-summary?from=2026-01-01&to=2026-04-30
-//      Purchase Order spend summary for a date range.
-//      Shows total spend and breakdown by warehouse and product.
 
     @GetMapping("/po-summary")
     public ResponseEntity<Map<String, Object>> getPOSummary(

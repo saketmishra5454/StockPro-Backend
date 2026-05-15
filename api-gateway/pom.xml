@@ -25,19 +25,19 @@
 
     <dependencies>
 
-        <!-- Spring Cloud Gateway (reactive, NOT spring-boot-starter-web) -->
+
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway</artifactId>
         </dependency>
 
-        <!-- Eureka Client - registers this gateway with Eureka -->
+
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
 
-        <!-- JWT - to validate tokens at the gateway level -->
+
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
@@ -56,7 +56,7 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Test -->
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -65,7 +65,7 @@
 
     </dependencies>
 
-    <!-- Spring Cloud BOM - manages versions of all cloud dependencies -->
+
     <dependencyManagement>
         <dependencies>
             <dependency>

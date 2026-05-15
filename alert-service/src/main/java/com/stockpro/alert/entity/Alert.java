@@ -1,12 +1,12 @@
 package com.stockpro.alert.entity;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
-
 
 @Entity
 @Table(name = "alerts")
@@ -19,46 +19,40 @@ public class Alert {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int alertId;
 
-    // userId of who should see this alert
     @Column(nullable = false)
     private int recipientId;
 
-    // Alert category — one of: LOW_STOCK, OVERSTOCK, PO_PENDING,
-    // OVERDUE_RECEIPT, SYSTEM
     @Column(nullable = false)
     private String type;
 
-    // Severity — INFO, WARNING, or CRITICAL
-    // CRITICAL alerts also trigger email via JavaMailSender
     @Column(nullable = false)
     private String severity;
 
-    // Short headline shown in notification badge
     @Column(nullable = false)
     private String title;
 
-    // Full alert message with details
     @Column(columnDefinition = "TEXT")
     private String message;
 
-    // Which product triggered this alert (0 = not product-related)
+    @JsonAlias({"productId", "related_product_id"})
     private int relatedProductId;
 
-    // Which warehouse this alert is about (0 = not warehouse-related)
+    @JsonAlias({"warehouseId", "related_warehouse_id"})
     private int relatedWarehouseId;
 
-    // Delivery channel: IN_APP, EMAIL, BOTH
     private String channel;
 
-    // Has the user opened/viewed this alert?
+    // Read state for recipient notification views
+    @JsonAlias({"read"})
     @Column(nullable = false)
     private boolean isRead = false;
 
-    // Has the user confirmed action on this alert?
+    // Acknowledgement state for operational follow-up
+    @JsonAlias({"acknowledged"})
     @Column(nullable = false)
     private boolean isAcknowledged = false;
 
-    // When this alert was created
+    // Set automatically when alert is created
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

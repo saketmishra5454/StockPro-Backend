@@ -15,19 +15,16 @@ public class RabbitMQConfig {
     public static final String EXCHANGE = "stock.exchange";
     public static final String ROUTING_KEY = "stock.movement.key";
 
-    // ✅ Queue
     @Bean
     public Queue stockMovementQueue() {
         return new Queue(QUEUE, true);
     }
 
-    // ✅ Exchange
     @Bean
     public TopicExchange exchange() {
         return new TopicExchange(EXCHANGE);
     }
 
-    // ✅ Binding (connect queue + exchange)
     @Bean
     public Binding binding(Queue queue, TopicExchange exchange) {
         return BindingBuilder.bind(queue)
@@ -35,7 +32,6 @@ public class RabbitMQConfig {
                 .with(ROUTING_KEY);
     }
 
-    // ✅ JSON Converter
     @Bean
     public Jackson2JsonMessageConverter messageConverter() {
         return new Jackson2JsonMessageConverter();

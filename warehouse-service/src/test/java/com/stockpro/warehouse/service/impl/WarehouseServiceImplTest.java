@@ -65,6 +65,19 @@ class WarehouseServiceImplTest {
     }
 
     @Test
+    void activateWarehouseMarksWarehouseActive() {
+        Warehouse warehouse = warehouse("Mumbai Central");
+        warehouse.setActive(false);
+
+        when(warehouseRepository.findById(1)).thenReturn(Optional.of(warehouse));
+
+        warehouseService.activateWarehouse(1);
+
+        assertThat(warehouse.isActive()).isTrue();
+        verify(warehouseRepository).save(warehouse);
+    }
+
+    @Test
     void initializeStockCreatesFirstStockRecord() {
         Warehouse warehouse = warehouse("Mumbai Central");
 
@@ -97,6 +110,7 @@ class WarehouseServiceImplTest {
     void updateStockAddsQuantityAndPublishesMovementEvent() {
         StockLevel stockLevel = stockLevel(1, 7, 10, 0);
 
+        when(warehouseRepository.findById(1)).thenReturn(Optional.of(warehouse("Mumbai Central")));
         when(stockLevelRepository.findByWarehouseIdAndProductId(1, 7)).thenReturn(Optional.of(stockLevel));
         when(stockLevelRepository.save(stockLevel)).thenReturn(stockLevel);
 
@@ -113,6 +127,7 @@ class WarehouseServiceImplTest {
     void updateStockRejectsNegativeResult() {
         StockLevel stockLevel = stockLevel(1, 7, 10, 0);
 
+        when(warehouseRepository.findById(1)).thenReturn(Optional.of(warehouse("Mumbai Central")));
         when(stockLevelRepository.findByWarehouseIdAndProductId(1, 7)).thenReturn(Optional.of(stockLevel));
 
         assertThatThrownBy(() -> warehouseService.updateStock(1, 7, -11))
@@ -126,6 +141,7 @@ class WarehouseServiceImplTest {
     void updateStockPublishesCriticalAlertWhenQuantityBecomesZero() {
         StockLevel stockLevel = stockLevel(1, 7, 10, 0);
 
+        when(warehouseRepository.findById(1)).thenReturn(Optional.of(warehouse("Mumbai Central")));
         when(stockLevelRepository.findByWarehouseIdAndProductId(1, 7)).thenReturn(Optional.of(stockLevel));
         when(stockLevelRepository.save(stockLevel)).thenReturn(stockLevel);
 

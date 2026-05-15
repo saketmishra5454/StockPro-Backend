@@ -1,6 +1,6 @@
 package com.stockpro.alert.config;
 
-import org.springframework.amqp.core.Queue;   // ✅ FIX THIS IMPORT
+import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

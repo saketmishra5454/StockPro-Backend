@@ -14,6 +14,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.List;
 
 @Service
@@ -26,39 +29,50 @@ public class PurchaseServiceImpl implements PurchaseService {
     private final WarehouseClient warehouseClient;
     private final AlertClient alertClient;
 
-    // ── PO Lifecycle ─────────────────────────────────────────────────
-
     @Override
     @Transactional
     public PurchaseOrder createPO(PurchaseOrder purchaseOrder, List<POLineItem> lineItems) {
-        // Force status to DRAFT regardless of what caller sent
-        purchaseOrder.setStatus("DRAFT");
+        if (purchaseOrder == null) {
+            throw new IllegalArgumentException("Purchase order details are required.");
+        }
 
-        // Save the PO to generate poId
+        List<POLineItem> safeLineItems = lineItems == null ? Collections.emptyList() : lineItems;
+        if (safeLineItems.isEmpty()) {
+            throw new IllegalArgumentException("At least one purchase order line item is required.");
+        }
+
+        validatePurchaseOrderHeader(purchaseOrder);
+
+        // New purchase orders always enter the approval workflow as drafts
+        purchaseOrder.setStatus("DRAFT");
+        purchaseOrder.setTotalAmount(0);
+        if (purchaseOrder.getReferenceNumber() == null || purchaseOrder.getReferenceNumber().isBlank()) {
+            purchaseOrder.setReferenceNumber(generateReferenceNumber());
+        } else {
+            purchaseOrder.setReferenceNumber(purchaseOrder.getReferenceNumber().trim());
+        }
+
         PurchaseOrder savedPO = purchaseRepository.save(purchaseOrder);
 
-        // Link each line item to this PO and save
         double totalAmount = 0;
-        for (POLineItem item : lineItems) {
+        for (POLineItem item : safeLineItems) {
+            validateLineItem(item);
             item.setPoId(savedPO.getPoId());
-            item.setReceivedQty(0);                    // nothing received yet
+            item.setReceivedQty(0);
             item.setTotalCost(item.getQuantity() * item.getUnitCost());
             lineItemRepository.save(item);
             totalAmount += item.getTotalCost();
         }
 
-        // Update the PO with calculated total
         savedPO.setTotalAmount(totalAmount);
         return purchaseRepository.save(savedPO);
     }
-
 
     @Override
     @Transactional
     public PurchaseOrder submitPO(int poId) {
         PurchaseOrder po = getPOById(poId);
 
-        // Validate status transition
         if (!"DRAFT".equals(po.getStatus())) {
             throw new RuntimeException(
                     "Cannot submit PO. Current status is " + po.getStatus() +
@@ -68,8 +82,6 @@ public class PurchaseServiceImpl implements PurchaseService {
         po.setStatus("PENDING");
         PurchaseOrder saved = purchaseRepository.save(po);
 
-        // Notify Inventory Manager via alert-service
-        // recipientId = 0 means "broadcast to all managers" (alert-service handles routing)
         sendAlert(0, "PO_PENDING", "WARNING",
                 "PO Requires Approval",
                 "Purchase Order #" + po.getReferenceNumber() +
@@ -79,7 +91,6 @@ public class PurchaseServiceImpl implements PurchaseService {
         log.info("PO {} submitted for approval", poId);
         return saved;
     }
-
 
     @Override
     @Transactional
@@ -95,7 +106,6 @@ public class PurchaseServiceImpl implements PurchaseService {
         po.setStatus("APPROVED");
         PurchaseOrder saved = purchaseRepository.save(po);
 
-        // Notify the Purchase Officer who created this PO
         sendAlert(po.getCreatedById(), "PO_APPROVED", "INFO",
                 "PO Approved",
                 "Your Purchase Order #" + po.getReferenceNumber() + " has been approved.",
@@ -104,7 +114,6 @@ public class PurchaseServiceImpl implements PurchaseService {
         log.info("PO {} approved", poId);
         return saved;
     }
-
 
     @Override
     @Transactional
@@ -121,7 +130,6 @@ public class PurchaseServiceImpl implements PurchaseService {
         po.setRejectionReason(reason);
         PurchaseOrder saved = purchaseRepository.save(po);
 
-        // Notify the Purchase Officer
         sendAlert(po.getCreatedById(), "PO_PENDING", "WARNING",
                 "PO Rejected",
                 "Your Purchase Order #" + po.getReferenceNumber() +
@@ -132,13 +140,12 @@ public class PurchaseServiceImpl implements PurchaseService {
         return saved;
     }
 
-
     @Override
     @Transactional
     public PurchaseOrder receiveGoods(int poId, List<POLineItem> receivedItems) {
         PurchaseOrder po = getPOById(poId);
+        List<POLineItem> safeReceivedItems = receivedItems == null ? Collections.emptyList() : receivedItems;
 
-        // Only approved POs can receive goods
         if (!"APPROVED".equals(po.getStatus()) &&
                 !"PARTIALLY_RECEIVED".equals(po.getStatus())) {
             throw new RuntimeException(
@@ -146,20 +153,28 @@ public class PurchaseServiceImpl implements PurchaseService {
                             ". PO must be APPROVED or PARTIALLY_RECEIVED.");
         }
 
-        // Process each received item
-        for (POLineItem received : receivedItems) {
-            // Find the matching line item in the DB
-            List<POLineItem> existingLines = lineItemRepository.findByPoId(poId);
+        if (safeReceivedItems.isEmpty()) {
+            throw new IllegalArgumentException("At least one received line item is required.");
+        }
+
+        List<POLineItem> existingLines = lineItemRepository.findByPoId(poId);
+        if (existingLines.isEmpty()) {
+            throw new IllegalArgumentException("Purchase order has no line items to receive.");
+        }
+
+        for (POLineItem received : safeReceivedItems) {
             POLineItem matchingLine = existingLines.stream()
                     .filter(l -> l.getProductId() == received.getProductId())
                     .findFirst()
                     .orElseThrow(() -> new RuntimeException(
                             "Product " + received.getProductId() +
-                                    " is not in this PO's line items."));
+                            " is not in this PO's line items."));
 
             int qtyToReceive = received.getReceivedQty();
+            if (qtyToReceive <= 0) {
+                throw new IllegalArgumentException("Received quantity must be greater than 0.");
+            }
 
-            // Cannot receive more than what was ordered
             int remaining = matchingLine.getRemainingQty();
             if (qtyToReceive > remaining) {
                 throw new RuntimeException(
@@ -167,26 +182,24 @@ public class PurchaseServiceImpl implements PurchaseService {
                                 received.getProductId() + ". Remaining to receive: " + remaining);
             }
 
-            // Update receivedQty
-            matchingLine.setReceivedQty(matchingLine.getReceivedQty() + qtyToReceive);
-            lineItemRepository.save(matchingLine);
-
-            // Call warehouse-service to add stock
-            // delta = positive because we are adding stock (goods received = STOCK_IN)
             try {
+                // Receiving goods increases warehouse stock before PO receipt is persisted
                 warehouseClient.updateStock(po.getWarehouseId(),
                         received.getProductId(), qtyToReceive);
                 log.info("Stock updated: product={}, warehouse={}, qty=+{}",
                         received.getProductId(), po.getWarehouseId(), qtyToReceive);
             } catch (Exception e) {
-                // Log but don't fail — warehouse might be temporarily down
-                // In production you'd use a retry or saga pattern here
                 log.error("Failed to update stock for product {}: {}",
                         received.getProductId(), e.getMessage());
+                throw new IllegalStateException(
+                        "Could not update warehouse stock for received product " + received.getProductId(), e);
             }
+
+            matchingLine.setReceivedQty(matchingLine.getReceivedQty() + qtyToReceive);
+            lineItemRepository.save(matchingLine);
         }
 
-        // Check if all line items are now fully received
+        // PO status reflects aggregate receipt state across all line items
         boolean allReceived = lineItemRepository.areAllLinesFullyReceived(poId);
 
         if (allReceived) {
@@ -238,8 +251,6 @@ public class PurchaseServiceImpl implements PurchaseService {
         return purchaseRepository.save(existing);
     }
 
-    // ── Query Methods ─────────────────────────────────────────────────
-
     @Override
     public PurchaseOrder getPOById(int poId) {
         return purchaseRepository.findById(poId)
@@ -281,11 +292,6 @@ public class PurchaseServiceImpl implements PurchaseService {
         return lineItemRepository.findByPoId(poId);
     }
 
-    // ── Private helper ─────────────────────────────────────────────────
-
-
-     // Sends an alert via alert-service.
-
     private void sendAlert(int recipientId, String type, String severity,
                            String title, String message, int warehouseId) {
         try {
@@ -293,8 +299,39 @@ public class PurchaseServiceImpl implements PurchaseService {
                     recipientId, type, severity, title, message, warehouseId);
             alertClient.sendAlert(alert);
         } catch (Exception e) {
-            // Alert failure should not block PO operations — log and continue
+            // Alert delivery must not block purchase-order state changes
             log.warn("Could not send alert (alert-service may be down): {}", e.getMessage());
         }
+    }
+
+    private void validatePurchaseOrderHeader(PurchaseOrder purchaseOrder) {
+        if (purchaseOrder.getSupplierId() <= 0) {
+            throw new IllegalArgumentException("Supplier is required.");
+        }
+        if (purchaseOrder.getWarehouseId() <= 0) {
+            throw new IllegalArgumentException("Warehouse is required.");
+        }
+        if (purchaseOrder.getCreatedById() <= 0) {
+            throw new IllegalArgumentException("Created-by user is required.");
+        }
+    }
+
+    private void validateLineItem(POLineItem item) {
+        if (item == null) {
+            throw new IllegalArgumentException("Line item details are required.");
+        }
+        if (item.getProductId() <= 0) {
+            throw new IllegalArgumentException("Line item product is required.");
+        }
+        if (item.getQuantity() <= 0) {
+            throw new IllegalArgumentException("Line item quantity must be greater than 0.");
+        }
+        if (item.getUnitCost() < 0) {
+            throw new IllegalArgumentException("Line item unit cost cannot be negative.");
+        }
+    }
+
+    private String generateReferenceNumber() {
+        return "PO-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"));
     }
 }

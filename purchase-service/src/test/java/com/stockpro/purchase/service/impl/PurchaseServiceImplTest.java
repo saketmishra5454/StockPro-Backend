@@ -69,6 +69,16 @@ class PurchaseServiceImplTest {
     }
 
     @Test
+    void createPORejectsEmptyLineItems() {
+        PurchaseOrder po = purchaseOrder("DRAFT");
+
+        assertThatThrownBy(() -> purchaseService.createPO(po, List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("line item");
+        verify(purchaseRepository, never()).save(any(PurchaseOrder.class));
+    }
+
+    @Test
     void submitPOChangesDraftToPendingAndSendsAlert() {
         PurchaseOrder po = purchaseOrder("DRAFT");
         po.setPoId(7);
@@ -172,7 +182,7 @@ class PurchaseServiceImplTest {
     }
 
     @Test
-    void receiveGoodsContinuesWhenWarehouseUpdateFails() {
+    void receiveGoodsFailsWhenWarehouseUpdateFails() {
         PurchaseOrder po = purchaseOrder("APPROVED");
         POLineItem existing = lineItem(11, 10, 15.0);
         POLineItem received = new POLineItem();
@@ -181,15 +191,15 @@ class PurchaseServiceImplTest {
 
         when(purchaseRepository.findById(7)).thenReturn(Optional.of(po));
         when(lineItemRepository.findByPoId(7)).thenReturn(List.of(existing));
-        when(lineItemRepository.areAllLinesFullyReceived(7)).thenReturn(false);
-        when(purchaseRepository.save(po)).thenReturn(po);
         doThrow(new RuntimeException("warehouse down")).when(warehouseClient).updateStock(3, 11, 3);
 
-        PurchaseOrder saved = purchaseService.receiveGoods(7, List.of(received));
+        assertThatThrownBy(() -> purchaseService.receiveGoods(7, List.of(received)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Could not update warehouse stock");
 
-        assertThat(saved.getStatus()).isEqualTo("PARTIALLY_RECEIVED");
-        assertThat(existing.getReceivedQty()).isEqualTo(3);
-        verify(lineItemRepository).save(existing);
+        assertThat(existing.getReceivedQty()).isZero();
+        verify(lineItemRepository, never()).save(existing);
+        verify(purchaseRepository, never()).save(po);
     }
 
     @Test

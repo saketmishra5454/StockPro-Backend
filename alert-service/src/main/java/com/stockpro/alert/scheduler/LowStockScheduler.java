@@ -1,6 +1,9 @@
 package com.stockpro.alert.scheduler;
 
+import com.stockpro.alert.dto.ProductDto;
 import com.stockpro.alert.dto.StockLevelDto;
+import com.stockpro.alert.dto.WarehouseDto;
+import com.stockpro.alert.feign.ProductClient;
 import com.stockpro.alert.feign.WarehouseClient;
 import com.stockpro.alert.service.AlertService;
 import lombok.RequiredArgsConstructor;
@@ -10,53 +13,95 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-
- //LowStockScheduler — proactively checks for low stock every 15 minutes.
-
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class LowStockScheduler {
 
     private final WarehouseClient warehouseClient;
+    private final ProductClient productClient;
     private final AlertService alertService;
 
-
-     // Runs every 15 minutes (900,000 milliseconds).
-     // Calls warehouse-service to get all low stock items.
-
     @Scheduled(fixedRate = 900000)
-    public void checkLowStock() {
-        log.info("Running scheduled low-stock check...");
+    public void checkStockHealth() {
+        log.info("Running scheduled stock-health check...");
 
         try {
-            List<StockLevelDto> lowStockItems = warehouseClient.getLowStockItems();
+            List<StockLevelDto> stockLevels = loadStockLevels();
 
-            if (lowStockItems == null || lowStockItems.isEmpty()) {
-                log.info("No low stock items found in scheduled check.");
+            if (stockLevels == null || stockLevels.isEmpty()) {
+                log.info("No stock levels found in scheduled check.");
                 return;
             }
 
-            log.info("Found {} low stock items in scheduled check.", lowStockItems.size());
+            for (StockLevelDto item : stockLevels) {
+                checkStockLevel(item);
+            }
+        } catch (Exception e) {
+            log.error("Scheduled stock-health check failed: {}", e.getMessage());
+            runLowStockFallback();
+        }
+    }
 
-            for (StockLevelDto item : lowStockItems) {
-                try {
-                    // sendLowStockAlert checks for duplicates internally
-                    // so running every 15 minutes won't spam users
-                    alertService.sendLowStockAlert(
-                            item.getProductId(),
-                            item.getWarehouseId(),
-                            item.getQuantity());
-                } catch (Exception e) {
-                    log.warn("Failed to create alert for product={}, warehouse={}: {}",
-                            item.getProductId(), item.getWarehouseId(), e.getMessage());
-                }
+    private List<StockLevelDto> loadStockLevels() {
+        try {
+            return warehouseClient.getAllStockLevels();
+        } catch (Exception e) {
+            log.warn("Could not use /api/stock for stock-health check, falling back to warehouse-by-warehouse lookup: {}",
+                    e.getMessage());
+        }
+
+        List<WarehouseDto> warehouses = warehouseClient.getAllWarehouses();
+        return warehouses.stream()
+                .flatMap(warehouse -> warehouseClient.getStockByWarehouse(warehouse.getWarehouseId()).stream())
+                .toList();
+    }
+
+    private void checkStockLevel(StockLevelDto item) {
+        try {
+            ProductDto product = productClient.getProductById(item.getProductId());
+            if (product == null) {
+                log.warn("Skipping stock-health check for product={}, warehouse={} because product-service returned no product.",
+                        item.getProductId(), item.getWarehouseId());
+                return;
+            }
+            if (!product.isActive()) {
+                log.debug("Skipping inactive product={} during stock-health check.", item.getProductId());
+                return;
+            }
+            int availableQty = item.getQuantity() - item.getReservedQuantity();
+
+            if (product.getReorderLevel() > 0 && availableQty < product.getReorderLevel()) {
+                alertService.sendLowStockAlert(
+                        item.getProductId(),
+                        item.getWarehouseId(),
+                        availableQty);
             }
 
+            if (product.getMaxStockLevel() > 0 && item.getQuantity() > product.getMaxStockLevel()) {
+                alertService.sendOverstockAlert(
+                        item.getProductId(),
+                        item.getWarehouseId(),
+                        item.getQuantity(),
+                        product.getMaxStockLevel());
+            }
         } catch (Exception e) {
-            // warehouse-service might be down — log and wait for next cycle
-            log.error("Scheduled low-stock check failed (warehouse-service may be down): {}",
-                    e.getMessage());
+            log.warn("Failed to evaluate stock health for product={}, warehouse={}: {}",
+                    item.getProductId(), item.getWarehouseId(), e.getMessage());
+        }
+    }
+
+    private void runLowStockFallback() {
+        try {
+            List<StockLevelDto> lowStockItems = warehouseClient.getLowStockItems();
+            for (StockLevelDto item : lowStockItems) {
+                alertService.sendLowStockAlert(
+                        item.getProductId(),
+                        item.getWarehouseId(),
+                        item.getQuantity() - item.getReservedQuantity());
+            }
+        } catch (Exception e) {
+            log.warn("Low-stock fallback check also failed: {}", e.getMessage());
         }
     }
 }

@@ -21,29 +21,24 @@ public class Warehouse {
     @Column(nullable = false)
     private String name;
 
-    // City or region (e.g. "Mumbai", "North Zone")
     private String location;
 
-    // Full street address
     @Column(columnDefinition = "TEXT")
     private String address;
 
-    // FK to users table in auth-service (no JPA join — different DB)
     private int managerId;
 
-    // Total storage capacity in units
     private int capacity;
 
-    // How much capacity is currently used
     private int usedCapacity;
 
-    // Soft delete — false = closed warehouse
+    // Soft delete flag - inactive warehouses remain available for history
     @Column(nullable = false)
     private boolean isActive = true;
 
     private String phone;
 
-    // Auto-set when warehouse record is first created
+    // Set automatically when warehouse is first created
     @Column(nullable = false, updatable = false)
     private LocalDate createdAt;
 

@@ -4,7 +4,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -15,7 +14,6 @@ public class StockLevelDto {
     private Long warehouseId;
     private Integer quantity;
     private Integer reorderThreshold;
-
 
     public boolean isBelowReorderLevel() {
         if (quantity == null || reorderThreshold == null) return false;

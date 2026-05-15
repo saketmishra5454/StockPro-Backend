@@ -107,7 +107,16 @@ class AlertServiceImplTest {
 
     @Test
     void sendBulkAlertSavesOneAlertPerRecipient() {
-        alertService.sendBulkAlert(List.of(1, 2, 3), "Maintenance", "System window");
+        Alert template = new Alert();
+        template.setType("SYSTEM");
+        template.setSeverity("INFO");
+        template.setTitle("Maintenance");
+        template.setMessage("System window");
+        template.setChannel("IN_APP");
+
+        when(alertRepository.save(any(Alert.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        alertService.sendBulkAlert(List.of(1, 2, 3), template);
 
         ArgumentCaptor<Alert> captor = ArgumentCaptor.forClass(Alert.class);
         verify(alertRepository, times(3)).save(captor.capture());
@@ -120,6 +129,32 @@ class AlertServiceImplTest {
                     assertThat(alert.getSeverity()).isEqualTo("INFO");
                     assertThat(alert.getChannel()).isEqualTo("IN_APP");
                 });
+    }
+
+    @Test
+    void sendOverstockAlertCreatesWarningAlert() {
+        when(alertRepository.existsUnacknowledgedOverstockAlert(11, 3)).thenReturn(false);
+        when(alertRepository.save(any(Alert.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        alertService.sendOverstockAlert(11, 3, 120, 100);
+
+        ArgumentCaptor<Alert> captor = ArgumentCaptor.forClass(Alert.class);
+        verify(alertRepository).save(captor.capture());
+        assertThat(captor.getValue().getType()).isEqualTo("OVERSTOCK");
+        assertThat(captor.getValue().getSeverity()).isEqualTo("WARNING");
+        assertThat(captor.getValue().getRelatedProductId()).isEqualTo(11);
+        assertThat(captor.getValue().getRelatedWarehouseId()).isEqualTo(3);
+        verify(mailSender, never()).send(any(SimpleMailMessage.class));
+    }
+
+    @Test
+    void getByRecipientIncludesBroadcastAlerts() {
+        List<Alert> expected = List.of(alert("INFO"));
+        when(alertRepository.findByRecipientIdInOrderByCreatedAtDesc(List.of(5, 0))).thenReturn(expected);
+
+        List<Alert> alerts = alertService.getByRecipient(5);
+
+        assertThat(alerts).isSameAs(expected);
     }
 
     @Test

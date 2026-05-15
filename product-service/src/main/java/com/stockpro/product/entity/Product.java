@@ -16,7 +16,6 @@ public class Product {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int productId;
 
-    // SKU must be unique — no two products can have the same SKU
     @Column(unique = true, nullable = false)
     private String sku;
 
@@ -30,38 +29,33 @@ public class Product {
 
     private String brand;
 
-    // Unit of measure: "pcs", "kg", "litre", "box", etc.
     private String unitOfMeasure;
 
-    // What we pay the supplier per unit
     @Column(nullable = false)
     private double costPrice;
 
-    // What we charge the customer per unit
     @Column(nullable = false)
     private double sellingPrice;
 
-    // Low-stock alert threshold — alert fires when stock < reorderLevel
+    // Low-stock alert threshold
     private int reorderLevel;
 
-    // Overstock alert threshold — alert fires when stock > maxStockLevel
+    // Overstock alert threshold
     private int maxStockLevel;
 
-    // Days between placing a PO and receiving goods
+    // Expected supplier lead time in days
     private int leadTimeDays;
 
-    // URL to product image stored in S3 or local storage
     private String imageUrl;
 
-    // Soft delete — false = deactivated, record stays in DB
+    // Soft delete flag - inactive products remain available for history
     @Column(nullable = false)
     private boolean isActive = true;
 
-    // Barcode string — used by warehouse staff scanner
+    // Optional scanner identifier used by warehouse operations
     @Column(unique = true)
     private String barcode;
 
-    // Auto-set isActive = true when product is first created
     @PrePersist
     public void prePersist() {
         this.isActive = true;

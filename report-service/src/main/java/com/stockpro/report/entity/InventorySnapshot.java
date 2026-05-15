@@ -8,9 +8,6 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
-
- // InventorySnapshot — a point-in-time record of stock quantities and values.
-
 @Entity
 @Table(name = "inventory_snapshots",
         uniqueConstraints = @UniqueConstraint(
@@ -31,20 +28,17 @@ public class InventorySnapshot {
     @Column(name = "product_id", nullable = false)
     private int productId;
 
-    // Stock quantity at time of snapshot
     @Column(nullable = false)
     private int quantity;
 
-    // quantity × costPrice at time of snapshot
-    // Stored so historical valuations remain accurate even if costPrice changes
     @Column(nullable = false)
     private double stockValue;
 
-    // The date this snapshot was taken (yyyy-MM-dd)
+    // Business date represented by this inventory position
     @Column(name = "snapshot_date", nullable = false)
     private LocalDate snapshotDate;
 
-    // Exact timestamp of creation — for debugging and audit
+    // Persistence timestamp for audit and troubleshooting
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

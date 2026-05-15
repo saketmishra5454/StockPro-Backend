@@ -4,10 +4,6 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-
-//  StockLevelDto — mirrors StockLevel entity from warehouse-service.
-//  FIXED: was Map<String,Object> — type-safe Jackson deserialization.
-
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

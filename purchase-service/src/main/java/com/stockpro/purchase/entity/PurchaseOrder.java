@@ -7,7 +7,6 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDate;
 
-
 @Entity
 @Table(name = "purchase_orders")
 @Data
@@ -25,34 +24,30 @@ public class PurchaseOrder {
     @Column(nullable = false)
     private int warehouseId;
 
-    // Who created this PO (Purchase Officer userId from auth-service)
     @Column(nullable = false)
     private int createdById;
 
-    // DRAFT / PENDING / APPROVED / PARTIALLY_RECEIVED / RECEIVED / REJECTED / CANCELLED
     @Column(nullable = false)
     private String status;
 
+    // Aggregate value of all line items
     private double totalAmount;
 
-    // Date the PO was created — set automatically in createPO()
+    // Set automatically when the PO is first created
     @Column(nullable = false, updatable = false)
     private LocalDate orderDate;
 
-    // Expected delivery date — set by Purchase Officer when creating PO
     private LocalDate expectedDate;
 
-    // Actual date goods were received — set when GRN is recorded
     private LocalDate receivedDate;
 
     @Column(columnDefinition = "TEXT")
     private String notes;
 
-    // Human-readable PO reference (e.g. "PO-2026-001")
     @Column(unique = true)
     private String referenceNumber;
 
-    // Reason for rejection or cancellation
+    // Captures rejection or cancellation reason when applicable
     private String rejectionReason;
 
     @PrePersist

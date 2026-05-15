@@ -53,6 +53,20 @@ class JwtAuthFilterTest {
     }
 
     @Test
+    void filterAllowsForgotPasswordWithoutToken() {
+        GatewayFilterChain chain = mock(GatewayFilterChain.class);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.post("/api/auth/forgot-password").build());
+
+        when(chain.filter(exchange)).thenReturn(Mono.empty());
+
+        filter.filter(exchange, chain).block();
+
+        verify(chain).filter(exchange);
+        assertThat(exchange.getResponse().getStatusCode()).isNull();
+    }
+
+    @Test
     void filterRejectsProtectedPathWithoutBearerToken() {
         GatewayFilterChain chain = mock(GatewayFilterChain.class);
         MockServerWebExchange exchange = MockServerWebExchange.from(

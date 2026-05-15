@@ -7,7 +7,6 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
-
 @Entity
 @Table(name = "stock_levels",
         uniqueConstraints = @UniqueConstraint(
@@ -29,11 +28,10 @@ public class StockLevel {
     @Column(name = "product_id", nullable = false)
     private int productId;
 
-    // Total physical quantity on hand
     @Column(nullable = false)
     private int quantity = 0;
 
-    // Quantity reserved for open POs (cannot be issued to other orders)
+    // Quantity reserved for pending orders or transfers
     @Column(nullable = false)
     private int reservedQuantity = 0;
 
@@ -43,10 +41,9 @@ public class StockLevel {
     // Automatically updated every time stock quantity changes
     private LocalDateTime lastUpdated;
 
-
+    // Optimistic locking protects concurrent stock updates
     @Version
     private Long version;
-
 
     @Transient
     public int getAvailableQuantity() {

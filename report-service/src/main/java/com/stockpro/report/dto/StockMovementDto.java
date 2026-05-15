@@ -6,9 +6,6 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
-
- // StockMovementDto — mirrors StockMovement entity from movement-service.
-
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

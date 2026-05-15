@@ -11,7 +11,7 @@
         <module name="eureka-server" />
         <module name="config-server" />
       </profile>
-      <profile name="Annotation profile for warehouse-service" enabled="true">
+      <profile name="Annotation profile for auth-service" enabled="true">
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
@@ -20,9 +20,9 @@
         </processorPath>
         <module name="supplier-service" />
         <module name="auth-service" />
+        <module name="alert-service" />
         <module name="warehouse-service" />
         <module name="movement-service" />
-        <module name="alert-service" />
         <module name="purchase-service" />
         <module name="product-service" />
         <module name="report-service" />

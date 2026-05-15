@@ -51,8 +51,6 @@ public class ProductServiceImplTest {
         sampleProduct.setBarcode("5901234123457");
     }
 
-    // ── createProduct() ───────────────────────────────────────────────
-
     @Test
     @DisplayName("createProduct — should save and return product")
     void createProduct_newSku_savesProduct() {
@@ -79,8 +77,6 @@ public class ProductServiceImplTest {
         verify(productRepository, never()).save(any());
     }
 
-    // ── getById() ─────────────────────────────────────────────────────
-
     @Test
     @DisplayName("getById — should return product for valid ID")
     void getById_validId_returnsProduct() {
@@ -101,8 +97,6 @@ public class ProductServiceImplTest {
                 .hasMessageContaining("not found");
     }
 
-    // ── getBySku() ────────────────────────────────────────────────────
-
     @Test
     @DisplayName("getBySku — should return product for valid SKU")
     void getBySku_validSku_returnsProduct() {
@@ -115,12 +109,10 @@ public class ProductServiceImplTest {
         assertThat(result.get().getName()).isEqualTo("M6 Stainless Steel Bolt");
     }
 
-    // ── searchProducts() ──────────────────────────────────────────────
-
     @Test
     @DisplayName("searchProducts — should return matching products")
     void searchProducts_nameMatch_returnsResults() {
-        when(productRepository.findByNameContainingIgnoreCase("bolt"))
+        when(productRepository.searchCatalog("bolt"))
                 .thenReturn(List.of(sampleProduct));
 
         List<Product> results = productService.searchProducts("bolt");
@@ -132,15 +124,13 @@ public class ProductServiceImplTest {
     @Test
     @DisplayName("searchProducts — should return empty for no matches")
     void searchProducts_noMatch_returnsEmpty() {
-        when(productRepository.findByNameContainingIgnoreCase("xyz"))
+        when(productRepository.searchCatalog("xyz"))
                 .thenReturn(List.of());
 
         List<Product> results = productService.searchProducts("xyz");
 
         assertThat(results).isEmpty();
     }
-
-    // ── deactivateProduct() ───────────────────────────────────────────
 
     @Test
     @DisplayName("deactivateProduct — should set isActive to false")
@@ -154,7 +144,18 @@ public class ProductServiceImplTest {
         verify(productRepository).save(sampleProduct);
     }
 
-    // ── updateProduct() ───────────────────────────────────────────────
+    @Test
+    @DisplayName("activateProduct - should set isActive to true")
+    void activateProduct_inactiveProduct_setsActive() {
+        sampleProduct.setActive(false);
+        when(productRepository.findById(1)).thenReturn(Optional.of(sampleProduct));
+        when(productRepository.save(any())).thenReturn(sampleProduct);
+
+        productService.activateProduct(1);
+
+        assertThat(sampleProduct.isActive()).isTrue();
+        verify(productRepository).save(sampleProduct);
+    }
 
     @Test
     @DisplayName("updateProduct — should update only provided fields")
@@ -165,17 +166,14 @@ public class ProductServiceImplTest {
         Product updates = new Product();
         updates.setName("M6 Bolt Updated");
         updates.setCostPrice(3.00);
-        // SKU and category not set — should remain unchanged
 
         Product result = productService.updateProduct(1, updates);
 
         assertThat(result.getName()).isEqualTo("M6 Bolt Updated");
         assertThat(result.getCostPrice()).isEqualTo(3.00);
-        assertThat(result.getSku()).isEqualTo("BOLT-M6-SS");     // unchanged
-        assertThat(result.getCategory()).isEqualTo("Fasteners"); // unchanged
+        assertThat(result.getSku()).isEqualTo("BOLT-M6-SS");
+        assertThat(result.getCategory()).isEqualTo("Fasteners");
     }
-
-    // ── getLowStockProducts() ─────────────────────────────────────────
 
     @Test
     @DisplayName("getLowStockProducts — should return products with low stock from warehouse")
@@ -198,16 +196,12 @@ public class ProductServiceImplTest {
     @Test
     @DisplayName("getLowStockProducts — should return empty list if warehouse-service is down")
     void getLowStockProducts_warehouseDown_returnsEmptyList() {
-        // Simulate Feign exception (service unavailable)
         when(warehouseClient.getLowStockItems())
                 .thenThrow(new RuntimeException("Connection refused"));
 
-        // Should NOT throw — graceful degradation
         List<Product> result = productService.getLowStockProducts();
         assertThat(result).isEmpty();
     }
-
-    // ── getByBarcode() ────────────────────────────────────────────────
 
     @Test
     @DisplayName("getByBarcode — should return product for valid barcode")

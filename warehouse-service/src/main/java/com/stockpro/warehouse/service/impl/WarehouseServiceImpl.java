@@ -24,15 +24,13 @@ public class WarehouseServiceImpl implements WarehouseService {
     private final StockLevelRepository stockLevelRepository;
     private final RabbitTemplate rabbitTemplate;
 
-    // RabbitMQ exchange and routing keys — must match RabbitMQConfig declarations
     private static final String EXCHANGE        = "stockpro.exchange";
     private static final String MOVEMENT_KEY    = "stock.movement.warehouse";
     private static final String ALERT_KEY       = "stock.alert.lowstock";
 
-    // ── Warehouse CRUD ─────────────────────────────────────────────
-
     @Override
     public Warehouse createWarehouse(Warehouse warehouse) {
+        validateWarehouse(warehouse);
         if (warehouseRepository.existsByName(warehouse.getName())) {
             throw new RuntimeException("Warehouse with name '" + warehouse.getName() + "' already exists.");
         }
@@ -54,7 +52,7 @@ public class WarehouseServiceImpl implements WarehouseService {
     public Warehouse updateWarehouse(int warehouseId, Warehouse updated) {
         Warehouse existing = getWarehouseById(warehouseId);
 
-        if (updated.getName() != null)     existing.setName(updated.getName());
+        if (updated.getName() != null && !updated.getName().isBlank()) existing.setName(updated.getName().trim());
         if (updated.getLocation() != null) existing.setLocation(updated.getLocation());
         if (updated.getAddress() != null)  existing.setAddress(updated.getAddress());
         if (updated.getPhone() != null)    existing.setPhone(updated.getPhone());
@@ -71,7 +69,12 @@ public class WarehouseServiceImpl implements WarehouseService {
         warehouseRepository.save(warehouse);
     }
 
-    // ── Stock Level Operations ──────────────────────────────────────
+    @Override
+    public void activateWarehouse(int warehouseId) {
+        Warehouse warehouse = getWarehouseById(warehouseId);
+        warehouse.setActive(true);
+        warehouseRepository.save(warehouse);
+    }
 
     @Override
     public StockLevel getStockLevel(int warehouseId, int productId) {
@@ -81,14 +84,11 @@ public class WarehouseServiceImpl implements WarehouseService {
                                 " in warehouse " + warehouseId));
     }
 
-    /**
-     * Initialize stock for a product in a warehouse — creates the StockLevel row.
-     * Call this when a new product is first assigned to a warehouse.
-     */
+
     @Override
     @Transactional
     public StockLevel initializeStock(int warehouseId, int productId, int initialQuantity) {
-        // Validate warehouse exists
+        validateStockInput(warehouseId, productId, initialQuantity);
         getWarehouseById(warehouseId);
 
         if (stockLevelRepository.existsByWarehouseIdAndProductId(warehouseId, productId)) {
@@ -106,23 +106,22 @@ public class WarehouseServiceImpl implements WarehouseService {
         return stockLevelRepository.save(sl);
     }
 
-    /**
-     * Update stock by a delta.
-     * delta > 0 = stock received (GRN)
-     * delta < 0 = stock issued/consumed
-     *
-     * Key rules:
-     * - Cannot go below 0 (no negative stock)
-     * - After update, publish event to RabbitMQ so movement-service records the audit trail
-     * - If new quantity is very low, publish alert event too
-     */
+
     @Override
     @Transactional
     public StockLevel updateStock(int warehouseId, int productId, int delta) {
-        // Find existing stock level — create if doesn't exist (first time stock in)
+        if (warehouseId <= 0 || productId <= 0) {
+            throw new IllegalArgumentException("Warehouse and product are required.");
+        }
+        if (delta == 0) {
+            throw new IllegalArgumentException("Stock delta cannot be zero.");
+        }
+        getWarehouseById(warehouseId);
+
         StockLevel sl = stockLevelRepository
                 .findByWarehouseIdAndProductId(warehouseId, productId)
                 .orElseGet(() -> {
+                    // First stock-in creates the warehouse/product stock record
                     StockLevel newSl = new StockLevel();
                     newSl.setWarehouseId(warehouseId);
                     newSl.setProductId(productId);
@@ -134,23 +133,26 @@ public class WarehouseServiceImpl implements WarehouseService {
         int previousQuantity = sl.getQuantity();
         int newQuantity = previousQuantity + delta;
 
-        // Guard: prevent negative stock
         if (newQuantity < 0) {
             throw new RuntimeException(
                     "Insufficient stock. Available: " + sl.getAvailableQuantity() +
+                            ", Requested: " + Math.abs(delta));
+        }
+        // Reserved quantity is protected from stock-out operations
+        if (delta < 0 && Math.abs(delta) > sl.getAvailableQuantity()) {
+            throw new RuntimeException(
+                    "Insufficient available stock. Available: " + sl.getAvailableQuantity() +
                             ", Requested: " + Math.abs(delta));
         }
 
         sl.setQuantity(newQuantity);
         StockLevel saved = stockLevelRepository.save(sl);
 
-        // Determine movement type for the audit event
         String movementType = delta > 0 ? "STOCK_IN" : "STOCK_OUT";
 
-        // Publish to RabbitMQ → movement-service records the audit trail
+        // Movement events maintain the cross-service audit trail
         publishMovementEvent(saved, movementType, delta, previousQuantity, newQuantity);
 
-        // If stock is now zero or critically low, publish an alert event
         if (newQuantity == 0) {
             publishAlertEvent(productId, warehouseId, newQuantity, "CRITICAL");
         }
@@ -161,17 +163,15 @@ public class WarehouseServiceImpl implements WarehouseService {
         return saved;
     }
 
-    /**
-     * Reserve stock for an open order.
-     * Increases reservedQuantity — these units are "locked" for this order.
-     * availableQuantity = quantity - reservedQuantity decreases.
-     */
+
     @Override
     @Transactional
     public StockLevel reserveStock(int warehouseId, int productId, int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("Reservation quantity must be greater than 0.");
+        }
         StockLevel sl = getStockLevel(warehouseId, productId);
 
-        // Cannot reserve more than what's available
         if (quantity > sl.getAvailableQuantity()) {
             throw new RuntimeException(
                     "Cannot reserve " + quantity + " units. Available: " + sl.getAvailableQuantity());
@@ -186,17 +186,15 @@ public class WarehouseServiceImpl implements WarehouseService {
         return saved;
     }
 
-    /**
-     * Release a reservation — frees up previously reserved stock.
-     * Called when a PO is cancelled or a reservation expires.
-     * Decreases reservedQuantity so availableQuantity goes back up.
-     */
+
     @Override
     @Transactional
     public StockLevel releaseReservation(int warehouseId, int productId, int quantity) {
+        if (quantity <= 0) {
+            throw new IllegalArgumentException("Release quantity must be greater than 0.");
+        }
         StockLevel sl = getStockLevel(warehouseId, productId);
 
-        // Cannot release more than what's currently reserved
         int releaseAmount = Math.min(quantity, sl.getReservedQuantity());
         sl.setReservedQuantity(sl.getReservedQuantity() - releaseAmount);
 
@@ -208,23 +206,10 @@ public class WarehouseServiceImpl implements WarehouseService {
         return saved;
     }
 
-    /**
-     * Transfer stock between two warehouses.
-     *
-     * MUST be @Transactional — if the credit to destination fails,
-     * the debit from source is automatically rolled back.
-     * This prevents stock disappearing (debited but never credited).
-     *
-     * Steps:
-     * 1. Debit (subtract) from source warehouse
-     * 2. Credit (add) to destination warehouse
-     * 3. Publish TRANSFER_OUT event for source
-     * 4. Publish TRANSFER_IN event for destination
-     */
+
     @Override
     @Transactional
     public void transferStock(int fromWarehouseId, int toWarehouseId, int productId, int quantity) {
-        // Validate both warehouses exist
         getWarehouseById(fromWarehouseId);
         getWarehouseById(toWarehouseId);
 
@@ -236,7 +221,6 @@ public class WarehouseServiceImpl implements WarehouseService {
             throw new RuntimeException("Transfer quantity must be greater than 0.");
         }
 
-        // Step 1: Get source stock — check it has enough available
         StockLevel source = getStockLevel(fromWarehouseId, productId);
         if (source.getAvailableQuantity() < quantity) {
             throw new RuntimeException(
@@ -245,15 +229,14 @@ public class WarehouseServiceImpl implements WarehouseService {
                             ", Requested: " + quantity);
         }
 
-        // Step 2: Debit from source
         int sourcePrevQty = source.getQuantity();
         source.setQuantity(source.getQuantity() - quantity);
         stockLevelRepository.save(source);
 
-        // Step 3: Credit to destination (create stock level if it doesn't exist yet)
         StockLevel destination = stockLevelRepository
                 .findByWarehouseIdAndProductId(toWarehouseId, productId)
                 .orElseGet(() -> {
+                    // Destination stock level is created on first transfer-in
                     StockLevel newSl = new StockLevel();
                     newSl.setWarehouseId(toWarehouseId);
                     newSl.setProductId(productId);
@@ -266,30 +249,25 @@ public class WarehouseServiceImpl implements WarehouseService {
         destination.setQuantity(destination.getQuantity() + quantity);
         stockLevelRepository.save(destination);
 
-        // Step 4: Publish TRANSFER_OUT event for source warehouse
         StockMovementEvent transferOut = new StockMovementEvent(
                 productId, fromWarehouseId, "TRANSFER_OUT",
                 -quantity, sourcePrevQty, source.getQuantity(),
                 0, "TRANSFER-" + fromWarehouseId + "-" + toWarehouseId,
                 LocalDateTime.now());
-        rabbitTemplate.convertAndSend(EXCHANGE, "stock.movement.transfer", transferOut);
+        publishSafely("stock.movement.transfer", transferOut);
 
-        // Step 5: Publish TRANSFER_IN event for destination warehouse
         StockMovementEvent transferIn = new StockMovementEvent(
                 productId, toWarehouseId, "TRANSFER_IN",
                 quantity, destPrevQty, destination.getQuantity(),
                 0, "TRANSFER-" + fromWarehouseId + "-" + toWarehouseId,
                 LocalDateTime.now());
-        rabbitTemplate.convertAndSend(EXCHANGE, "stock.movement.transfer", transferIn);
+        publishSafely("stock.movement.transfer", transferIn);
 
         log.info("Stock transfer complete: product={}, from={}, to={}, qty={}",
                 productId, fromWarehouseId, toWarehouseId, quantity);
     }
 
-    /**
-     * Get all stock levels below a safety threshold.
-     * Used by alert-service and product-service.
-     */
+
     @Override
     public List<StockLevel> getLowStockItems() {
         return stockLevelRepository.findAllLowStock();
@@ -300,14 +278,17 @@ public class WarehouseServiceImpl implements WarehouseService {
         return stockLevelRepository.findByWarehouseId(warehouseId);
     }
 
-    // ── Private helpers ─────────────────────────────────────────────
+    @Override
+    public List<StockLevel> getAllStockLevels() {
+        return stockLevelRepository.findAll();
+    }
 
     private void publishMovementEvent(StockLevel sl, String type,
                                       int delta, int prev, int next) {
         StockMovementEvent event = new StockMovementEvent(
                 sl.getProductId(), sl.getWarehouseId(), type,
                 delta, prev, next, 0, null, LocalDateTime.now());
-        rabbitTemplate.convertAndSend(EXCHANGE, MOVEMENT_KEY, event);
+        publishSafely(MOVEMENT_KEY, event);
     }
 
     private void publishAlertEvent(int productId, int warehouseId,
@@ -315,6 +296,41 @@ public class WarehouseServiceImpl implements WarehouseService {
         StockMovementEvent alertEvent = new StockMovementEvent(
                 productId, warehouseId, "ALERT_" + severity,
                 0, currentQty, currentQty, 0, null, LocalDateTime.now());
-        rabbitTemplate.convertAndSend(EXCHANGE, ALERT_KEY, alertEvent);
+        publishSafely(ALERT_KEY, alertEvent);
+    }
+
+    // Publishing failures are logged without rolling back stock persistence
+    private void publishSafely(String routingKey, StockMovementEvent event) {
+        try {
+            rabbitTemplate.convertAndSend(EXCHANGE, routingKey, event);
+        } catch (Exception e) {
+            log.warn("Could not publish stock event {} for product {} in warehouse {}: {}",
+                    event.getMovementType(), event.getProductId(), event.getWarehouseId(), e.getMessage());
+        }
+    }
+
+    private void validateWarehouse(Warehouse warehouse) {
+        if (warehouse == null) {
+            throw new IllegalArgumentException("Warehouse details are required.");
+        }
+        if (warehouse.getName() == null || warehouse.getName().isBlank()) {
+            throw new IllegalArgumentException("Warehouse name is required.");
+        }
+        warehouse.setName(warehouse.getName().trim());
+        if (warehouse.getManagerId() <= 0) {
+            throw new IllegalArgumentException("Warehouse manager is required.");
+        }
+        if (warehouse.getCapacity() < 0) {
+            throw new IllegalArgumentException("Warehouse capacity cannot be negative.");
+        }
+    }
+
+    private void validateStockInput(int warehouseId, int productId, int quantity) {
+        if (warehouseId <= 0 || productId <= 0) {
+            throw new IllegalArgumentException("Warehouse and product are required.");
+        }
+        if (quantity < 0) {
+            throw new IllegalArgumentException("Initial quantity cannot be negative.");
+        }
     }
 }

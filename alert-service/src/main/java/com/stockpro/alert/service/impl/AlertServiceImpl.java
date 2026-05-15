@@ -1,6 +1,10 @@
 package com.stockpro.alert.service.impl;
 
 import com.stockpro.alert.entity.Alert;
+import com.stockpro.alert.dto.ProductDto;
+import com.stockpro.alert.dto.WarehouseDto;
+import com.stockpro.alert.feign.ProductClient;
+import com.stockpro.alert.feign.WarehouseClient;
 import com.stockpro.alert.repository.AlertRepository;
 import com.stockpro.alert.service.AlertService;
 import lombok.RequiredArgsConstructor;
@@ -11,31 +15,27 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-
- // AlertServiceImpl — all business logic for alert management.
+import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class AlertServiceImpl implements AlertService {
 
+    private static final int BROADCAST_RECIPIENT_ID = 0;
+
     private final AlertRepository alertRepository;
     private final JavaMailSender mailSender;
+    private final ProductClient productClient;
+    private final WarehouseClient warehouseClient;
 
-    /**
-     * Send a single alert.
-     * Saves to DB. If severity is CRITICAL and email is provided, also sends email.
-     */
     @Override
     public Alert sendAlert(Alert alert) {
-        Alert saved = alertRepository.save(alert);
+        Alert sanitized = sanitize(alert);
+        Alert saved = alertRepository.save(sanitized);
 
-        // Send email for CRITICAL alerts only
         if ("CRITICAL".equals(saved.getSeverity())) {
-            log.info("CRITICAL alert created — triggering email for alertId={}",
-                    saved.getAlertId());
-            // Email is sent to a default admin address — in production,
-            // you'd look up the recipient's email from auth-service
+            log.info("Critical alert created, triggering email for alertId={}", saved.getAlertId());
             sendEmail(
                     "admin@stockpro.com",
                     "[CRITICAL] " + saved.getTitle(),
@@ -49,13 +49,9 @@ public class AlertServiceImpl implements AlertService {
         return saved;
     }
 
-
-     // Create a LOW_STOCK alert for a product+warehouse.
-
     @Override
     @Transactional
     public void sendLowStockAlert(int productId, int warehouseId, int currentQty) {
-        // Check for existing unacknowledged alert — prevent spam
         boolean alertExists = alertRepository.existsUnacknowledgedLowStockAlert(
                 productId, warehouseId);
 
@@ -65,18 +61,20 @@ public class AlertServiceImpl implements AlertService {
             return;
         }
 
-        // Determine severity based on quantity
-        String severity  = currentQty == 0 ? "CRITICAL" : "WARNING";
-        String title     = currentQty == 0
-                ? "OUT OF STOCK — Immediate Action Required"
-                : "Low Stock Warning";
-        String message   = String.format(
-                "Product ID %d in Warehouse ID %d has %d units remaining. " +
-                        "This is below the minimum reorder level. Please raise a Purchase Order.",
-                productId, warehouseId, currentQty);
+        String severity = currentQty == 0 ? "CRITICAL" : "WARNING";
+        String title = currentQty == 0
+                ? "Out of stock - immediate action required"
+                : "Low stock warning";
+        ProductDto product = findProduct(productId);
+        WarehouseDto warehouse = findWarehouse(warehouseId);
+        String productLabel = productLabel(productId, product);
+        String warehouseLabel = warehouseLabel(warehouseId, warehouse);
+        String message = String.format(
+                "%s at %s has %d units available. Raise a purchase order or transfer stock.",
+                productLabel, warehouseLabel, currentQty);
 
         Alert alert = new Alert();
-        alert.setRecipientId(0);           // 0 = broadcast to all Inventory Managers
+        alert.setRecipientId(BROADCAST_RECIPIENT_ID);
         alert.setType("LOW_STOCK");
         alert.setSeverity(severity);
         alert.setTitle(title);
@@ -85,30 +83,59 @@ public class AlertServiceImpl implements AlertService {
         alert.setRelatedWarehouseId(warehouseId);
         alert.setChannel("CRITICAL".equals(severity) ? "BOTH" : "IN_APP");
 
-        sendAlert(alert);  // this also sends email if CRITICAL
+        sendAlert(alert);
     }
-
-     // Send the same alert to multiple recipients.
 
     @Override
     @Transactional
-    public void sendBulkAlert(List<Integer> recipientIds, String title, String message) {
+    public void sendOverstockAlert(int productId, int warehouseId, int currentQty, int maxStockLevel) {
+        boolean alertExists = alertRepository.existsUnacknowledgedOverstockAlert(
+                productId, warehouseId);
+
+        if (alertExists) {
+            log.debug("Skipping duplicate OVERSTOCK alert for product={}, warehouse={}",
+                    productId, warehouseId);
+            return;
+        }
+
+        ProductDto product = findProduct(productId);
+        WarehouseDto warehouse = findWarehouse(warehouseId);
+        Alert alert = new Alert();
+        alert.setRecipientId(BROADCAST_RECIPIENT_ID);
+        alert.setType("OVERSTOCK");
+        alert.setSeverity("WARNING");
+        alert.setTitle("Overstock warning");
+        alert.setMessage(String.format(
+                "%s at %s has %d units, exceeding the maximum stock level of %d.",
+                productLabel(productId, product), warehouseLabel(warehouseId, warehouse), currentQty, maxStockLevel));
+        alert.setRelatedProductId(productId);
+        alert.setRelatedWarehouseId(warehouseId);
+        alert.setChannel("IN_APP");
+
+        sendAlert(alert);
+    }
+
+    @Override
+    @Transactional
+    public void sendBulkAlert(List<Integer> recipientIds, Alert template) {
+        if (recipientIds == null || recipientIds.isEmpty()) {
+            throw new IllegalArgumentException("At least one recipient is required.");
+        }
+
         for (int recipientId : recipientIds) {
             Alert alert = new Alert();
             alert.setRecipientId(recipientId);
-            alert.setType("SYSTEM");
-            alert.setSeverity("INFO");
-            alert.setTitle(title);
-            alert.setMessage(message);
-            alert.setChannel("IN_APP");
-            alertRepository.save(alert);
+            alert.setType(template.getType());
+            alert.setSeverity(template.getSeverity());
+            alert.setTitle(template.getTitle());
+            alert.setMessage(template.getMessage());
+            alert.setRelatedProductId(template.getRelatedProductId());
+            alert.setRelatedWarehouseId(template.getRelatedWarehouseId());
+            alert.setChannel(template.getChannel());
+            sendAlert(alert);
         }
-        log.info("Bulk alert sent to {} recipients: {}", recipientIds.size(), title);
+        log.info("Bulk alert sent to {} recipients: {}", recipientIds.size(), template.getTitle());
     }
-
-
-     // Mark a single alert as read.
-     // Removes it from the unread badge count.
 
     @Override
     @Transactional
@@ -120,9 +147,6 @@ public class AlertServiceImpl implements AlertService {
         return saved;
     }
 
-
-     // Mark ALL alerts for a recipient as read.
-
     @Override
     @Transactional
     public void markAllRead(int recipientId) {
@@ -130,49 +154,39 @@ public class AlertServiceImpl implements AlertService {
         log.info("Marked {} alerts as read for recipient {}", updated, recipientId);
     }
 
-
-      //Acknowledge an alert — user has seen and acted on it.
-     // Removes it from the pending action queue.
-
     @Override
     @Transactional
     public Alert acknowledge(int alertId) {
         Alert alert = getAlertById(alertId);
-        alert.setRead(true);             // also mark as read when acknowledging
+        alert.setRead(true);
         alert.setAcknowledged(true);
         Alert saved = alertRepository.save(alert);
         log.info("Alert {} acknowledged", alertId);
         return saved;
     }
 
-
-     // Get all alerts for a recipient — their full notification inbox.
-     // Ordered most recent first.
+    @Override
+    public List<Alert> getAll() {
+        return alertRepository.findAllByOrderByCreatedAtDesc();
+    }
 
     @Override
     public List<Alert> getByRecipient(int recipientId) {
-        return alertRepository.findByRecipientIdOrderByCreatedAtDesc(recipientId);
+        return alertRepository.findByRecipientIdInOrderByCreatedAtDesc(
+                List.of(recipientId, BROADCAST_RECIPIENT_ID));
     }
-
-     //Count unread alerts for a recipient.
 
     @Override
     public long getUnreadCount(int recipientId) {
-        return alertRepository.countByRecipientIdAndIsReadFalse(recipientId);
+        return alertRepository.countByRecipientIdInAndIsReadFalse(
+                List.of(recipientId, BROADCAST_RECIPIENT_ID));
     }
-
-
-     // Get all unacknowledged alerts for a recipient.
 
     @Override
     public List<Alert> getUnacknowledged(int recipientId) {
-        return alertRepository
-                .findByRecipientIdAndIsAcknowledgedFalseOrderByCreatedAtDesc(recipientId);
+        return alertRepository.findByRecipientIdInAndIsAcknowledgedFalseOrderByCreatedAtDesc(
+                List.of(recipientId, BROADCAST_RECIPIENT_ID));
     }
-
-
-     // Delete an alert permanently.
-      //Usually only done by Admin for cleanup.
 
     @Override
     @Transactional
@@ -184,32 +198,99 @@ public class AlertServiceImpl implements AlertService {
         log.info("Alert {} deleted", alertId);
     }
 
-
-     // Send an email via JavaMailSender (Gmail SMTP).
-
     @Override
     public void sendEmail(String to, String subject, String body) {
         try {
             SimpleMailMessage message = new SimpleMailMessage();
             message.setTo(to);
             message.setSubject(subject);
-            message.setText(body);
-            message.setFrom("StockPro Alerts <noreply@stockpro.com>");
+            message.setText(body == null ? "" : body);
+            message.setFrom("noreply@stockpro.com");
 
             mailSender.send(message);
             log.info("Email sent successfully to: {}", to);
 
         } catch (Exception e) {
-            // Email failure should NOT block alert creation
-            // The alert is already saved in DB and visible in-app
             log.error("Failed to send email to {}: {}", to, e.getMessage());
         }
     }
 
-    // ── Private helper ──────────────────────────────────────────────
-
     private Alert getAlertById(int alertId) {
         return alertRepository.findById(alertId)
                 .orElseThrow(() -> new RuntimeException("Alert not found: " + alertId));
+    }
+
+    private Alert sanitize(Alert alert) {
+        if (alert == null) {
+            throw new IllegalArgumentException("Alert details are required.");
+        }
+        if (alert.getRecipientId() < 0) {
+            throw new IllegalArgumentException("Recipient ID cannot be negative.");
+        }
+        alert.setType(normalize(alert.getType(), "SYSTEM"));
+        alert.setSeverity(normalize(alert.getSeverity(), "INFO"));
+        alert.setChannel(normalize(alert.getChannel(), "IN_APP"));
+
+        if (alert.getTitle() == null || alert.getTitle().isBlank()) {
+            alert.setTitle(defaultTitle(alert.getType()));
+        } else {
+            alert.setTitle(alert.getTitle().trim());
+        }
+        if (alert.getMessage() == null) {
+            alert.setMessage("");
+        }
+        return alert;
+    }
+
+    private String normalize(String value, String fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        return value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String defaultTitle(String type) {
+        return switch (type) {
+            case "LOW_STOCK" -> "Low stock warning";
+            case "OVERSTOCK" -> "Overstock warning";
+            case "PO_PENDING" -> "PO requires approval";
+            case "OVERDUE_RECEIPT" -> "Overdue receipt";
+            default -> "System alert";
+        };
+    }
+
+    private ProductDto findProduct(int productId) {
+        try {
+            return productClient == null ? null : productClient.getProductById(productId);
+        } catch (Exception e) {
+            log.warn("Could not enrich alert with product {}: {}", productId, e.getMessage());
+            return null;
+        }
+    }
+
+    private WarehouseDto findWarehouse(int warehouseId) {
+        try {
+            return warehouseClient == null ? null : warehouseClient.getWarehouseById(warehouseId);
+        } catch (Exception e) {
+            log.warn("Could not enrich alert with warehouse {}: {}", warehouseId, e.getMessage());
+            return null;
+        }
+    }
+
+    private String productLabel(int productId, ProductDto product) {
+        if (product == null) {
+            return "Product " + productId;
+        }
+        String sku = product.getSku() == null || product.getSku().isBlank()
+                ? ""
+                : " (SKU " + product.getSku() + ")";
+        return product.getName() + sku;
+    }
+
+    private String warehouseLabel(int warehouseId, WarehouseDto warehouse) {
+        if (warehouse == null || warehouse.getName() == null || warehouse.getName().isBlank()) {
+            return "Warehouse " + warehouseId;
+        }
+        return warehouse.getName();
     }
 }

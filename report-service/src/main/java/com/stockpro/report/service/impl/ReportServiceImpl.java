@@ -4,6 +4,7 @@ import com.stockpro.report.dto.ProductDto;
 import com.stockpro.report.dto.ProductMovementSummary;
 import com.stockpro.report.dto.StockLevelDto;
 import com.stockpro.report.dto.StockMovementDto;
+import com.stockpro.report.dto.WarehouseDto;
 import com.stockpro.report.entity.InventorySnapshot;
 import com.stockpro.report.feign.MovementClient;
 import com.stockpro.report.feign.ProductClient;
@@ -21,9 +22,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
-
- // ReportServiceImpl — all analytics business logic.
-
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -36,11 +34,6 @@ public class ReportServiceImpl implements ReportService {
 
     private static final DateTimeFormatter DT_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
-
-    // ── Snapshot ────────────────────────────────────────────────────
-
-
-     // Take a snapshot of all stock in one warehouse.
 
     @Override
     @Transactional
@@ -60,14 +53,12 @@ public class ReportServiceImpl implements ReportService {
         int skipped = 0;
 
         for (StockLevelDto sl : stockLevels) {
-            // Skip if already snapshotted today
             if (reportRepository.existsByWarehouseIdAndProductIdAndSnapshotDate(
                     sl.getWarehouseId(), sl.getProductId(), today)) {
                 skipped++;
                 continue;
             }
 
-            // Fetch costPrice from product-service
             double costPrice = 0.0;
             try {
                 ProductDto product = productClient.getProductById(sl.getProductId());
@@ -78,7 +69,6 @@ public class ReportServiceImpl implements ReportService {
                 // Continue with costPrice = 0 so snapshot is still recorded
             }
 
-            // Build and save snapshot
             InventorySnapshot snapshot = new InventorySnapshot();
             snapshot.setWarehouseId(sl.getWarehouseId());
             snapshot.setProductId(sl.getProductId());
@@ -94,21 +84,14 @@ public class ReportServiceImpl implements ReportService {
                 warehouseId, saved, skipped);
     }
 
-
-//      Take snapshots for ALL warehouses that have been previously snapshotted.
-//      Called by SnapshotScheduler at midnight.
-
     @Override
     public void takeSnapshotAllWarehouses() {
         log.info("Taking daily snapshot for all warehouses...");
 
-        List<Integer> warehouseIds = reportRepository.findDistinctWarehouseIds();
+        List<Integer> warehouseIds = loadWarehouseIdsForSnapshot();
 
-        // If no snapshots exist yet, we can't discover warehouses from our DB
-        // In production, you'd call warehouse-service to get all warehouse IDs
         if (warehouseIds.isEmpty()) {
-            log.warn("No warehouse IDs found in snapshot history. " +
-                    "Trigger manual snapshot first via POST /api/reports/snapshot/{warehouseId}");
+            log.warn("No warehouse IDs found from warehouse-service or snapshot history.");
             return;
         }
 
@@ -121,6 +104,36 @@ public class ReportServiceImpl implements ReportService {
         }
     }
 
+    private List<Integer> loadWarehouseIdsForSnapshot() {
+        try {
+            List<WarehouseDto> warehouses = warehouseClient.getAllWarehouses();
+            if (warehouses != null && !warehouses.isEmpty()) {
+                return warehouses.stream()
+                        .map(WarehouseDto::getWarehouseId)
+                        .filter(id -> id > 0)
+                        .distinct()
+                        .toList();
+            }
+        } catch (Exception e) {
+            log.warn("Could not load warehouses from warehouse-service for snapshot-all: {}", e.getMessage());
+        }
+
+        try {
+            List<StockLevelDto> stockLevels = warehouseClient.getAllStockLevels();
+            if (stockLevels != null && !stockLevels.isEmpty()) {
+                return stockLevels.stream()
+                        .map(StockLevelDto::getWarehouseId)
+                        .filter(id -> id > 0)
+                        .distinct()
+                        .toList();
+            }
+        } catch (Exception e) {
+            log.warn("Could not derive warehouse IDs from stock levels for snapshot-all: {}", e.getMessage());
+        }
+
+        return reportRepository.findDistinctWarehouseIds();
+    }
+
     @Override
     public List<InventorySnapshot> getLatestSnapshot(int warehouseId) {
         return reportRepository.findByWarehouseId(warehouseId).stream()
@@ -128,35 +141,23 @@ public class ReportServiceImpl implements ReportService {
                 .collect(Collectors.toList());
     }
 
-    // ── Valuation ────────────────────────────────────────────────────
-
-
-//      Total stock value across all warehouses.
-//      Reads from our snapshot DB — uses latest snapshot date.
-
     @Override
     public double getTotalStockValue() {
         Double total = reportRepository.sumTotalStockValue();
         return total != null ? total : 0.0;
     }
 
-    /**
-     * Stock value for one warehouse from latest snapshot.
-     */
+
     @Override
     public double getStockValueByWarehouse(int warehouseId) {
         Double value = reportRepository.sumStockValueByWarehouse(warehouseId);
         return value != null ? value : 0.0;
     }
 
-    // ── Turnover ──────────────────────────────────────────────────────
-
-
      // Inventory Turnover Rate = COGS / Average Inventory Value
 
     @Override
     public double getInventoryTurnover(int warehouseId, LocalDate from, LocalDate to) {
-        // Step 1: Calculate COGS from movement-service
         double cogs = 0.0;
         try {
             String fromStr = from.atStartOfDay().format(DT_FORMATTER);
@@ -175,7 +176,6 @@ public class ReportServiceImpl implements ReportService {
             log.warn("Could not fetch movements for turnover calculation: {}", e.getMessage());
         }
 
-        // Step 2: Get average inventory value from snapshot DB
         Double avgInventory = reportRepository
                 .avgStockValueByWarehouseAndDateRange(warehouseId, from, to);
 
@@ -190,11 +190,6 @@ public class ReportServiceImpl implements ReportService {
 
         return Math.round(turnover * 100.0) / 100.0;
     }
-
-    // ── Product Movement Reports ─────────────────────────────────────
-
-//      Low stock report — products currently below reorder level.
-//      Calls warehouse-service for current low stock items.
 
     @Override
     public List<Map<String, Object>> getLowStockReport() {
@@ -211,7 +206,6 @@ public class ReportServiceImpl implements ReportService {
                 row.put("reservedQuantity", item.getReservedQuantity());
                 row.put("availableQuantity", item.getQuantity() - item.getReservedQuantity());
 
-                // Enrich with product name if product-service is available
                 try {
                     ProductDto product = productClient.getProductById(item.getProductId());
                     row.put("productName", product.getName());
@@ -232,34 +226,21 @@ public class ReportServiceImpl implements ReportService {
         return report;
     }
 
-
-     // Top moving products — ranked by total units moved (in + out combined).
-
     @Override
     public List<ProductMovementSummary> getTopMovingProducts(int limit) {
         return buildMovementRanking(limit, false);
     }
-
-
-//      Slow moving products — minimal movement in last 30 days.
-//      Same calculation as top movers but sorted ascending (least movement first).
 
     @Override
     public List<ProductMovementSummary> getSlowMovingProducts(int limit) {
         return buildMovementRanking(limit, true);
     }
 
-
-     // Dead stock — products with no quantity change in snapshot history for 90+ days.
-
     @Override
     public List<InventorySnapshot> getDeadStock() {
         LocalDate cutoff = LocalDate.now().minusDays(90);
         return reportRepository.findSlowMovingStock(cutoff);
     }
-
-
-     // PO spend summary for a date range.
 
     @Override
     public Map<String, Object> getPOSummary(LocalDate from, LocalDate to) {
@@ -274,23 +255,19 @@ public class ReportServiceImpl implements ReportService {
             List<StockMovementDto> movements =
                     movementClient.getMovementsByDateRange(fromStr, toStr);
 
-            // Filter only STOCK_IN (these are goods received from POs)
             List<StockMovementDto> stockInMovements = movements.stream()
                     .filter(m -> "STOCK_IN".equals(m.getMovementType()))
                     .collect(Collectors.toList());
 
-            // Total spend = sum of (quantity × unitCost)
             double totalSpend = stockInMovements.stream()
                     .mapToDouble(m -> m.getQuantity() * m.getUnitCost())
                     .sum();
 
-            // Group by warehouse
             Map<Integer, Double> spendByWarehouse = stockInMovements.stream()
                     .collect(Collectors.groupingBy(
                             StockMovementDto::getWarehouseId,
                             Collectors.summingDouble(m -> m.getQuantity() * m.getUnitCost())));
 
-            // Group by product
             Map<Integer, Integer> unitsByProduct = stockInMovements.stream()
                     .collect(Collectors.groupingBy(
                             StockMovementDto::getProductId,
@@ -309,18 +286,12 @@ public class ReportServiceImpl implements ReportService {
         return summary;
     }
 
-    // ── Private helpers ───────────────────────────────────────────────
-
-
-     // Builds movement ranking for top or slow movers.
-
     private List<ProductMovementSummary> buildMovementRanking(int limit, boolean ascending) {
         List<ProductMovementSummary> summaries = new ArrayList<>();
 
         try {
             List<ProductDto> products = productClient.getAllProducts();
 
-            // Calculate movement velocity for each active product
             LocalDate thirtyDaysAgo = LocalDate.now().minusDays(30);
             String fromStr = thirtyDaysAgo.atStartOfDay().format(DT_FORMATTER);
             String toStr = LocalDateTime.now().format(DT_FORMATTER);
@@ -336,7 +307,6 @@ public class ReportServiceImpl implements ReportService {
             for (ProductDto product : products) {
                 if (!product.isActive()) continue;
 
-                // Get movements for this product in last 30 days
                 List<StockMovementDto> productMovements = recentMovements.stream()
                         .filter(m -> m.getProductId() == product.getProductId())
                         .collect(Collectors.toList());
@@ -365,7 +335,6 @@ public class ReportServiceImpl implements ReportService {
                         totalValue));
             }
 
-            // Sort and limit
             Comparator<ProductMovementSummary> comparator =
                     Comparator.comparingInt(ProductMovementSummary::getTotalUnitsMoved);
             if (!ascending) comparator = comparator.reversed();
