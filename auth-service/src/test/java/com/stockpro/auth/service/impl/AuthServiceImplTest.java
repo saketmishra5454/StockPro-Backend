@@ -8,6 +8,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.util.List;
@@ -31,6 +32,9 @@ class AuthServiceImplTest {
 
     @Mock
     private JwtUtil jwtUtil;
+
+    @Mock
+    private JavaMailSender mailSender;
 
     @InjectMocks
     private AuthServiceImpl authService;
@@ -161,6 +165,33 @@ class AuthServiceImplTest {
 
         assertThat(user.getPasswordHash()).isEqualTo("new-hash");
         verify(userRepository).save(user);
+    }
+
+    @Test
+    void resetPasswordHashesNewPasswordForActiveEmail() {
+        User user = user("staff@stockpro.test", "old-hash");
+
+        when(userRepository.findByEmail("staff@stockpro.test")).thenReturn(Optional.of(user));
+        when(passwordEncoder.encode("new-password")).thenReturn("new-hash");
+
+        authService.resetPassword("staff@stockpro.test", "new-password");
+
+        assertThat(user.getPasswordHash()).isEqualTo("new-hash");
+        verify(userRepository).save(user);
+    }
+
+    @Test
+    void resetPasswordRejectsInactiveAccount() {
+        User user = user("staff@stockpro.test", "old-hash");
+        user.setActive(false);
+
+        when(userRepository.findByEmail("staff@stockpro.test")).thenReturn(Optional.of(user));
+
+        assertThatThrownBy(() -> authService.resetPassword("staff@stockpro.test", "new-password"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("deactivated");
+        verify(passwordEncoder, never()).encode(any(String.class));
+        verify(userRepository, never()).save(any(User.class));
     }
 
     @Test

@@ -7,15 +7,6 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
-/**
- * User entity - maps to the "users" table in stockpro_auth_db
- *
- * Roles:
- *   STAFF    - warehouse staff, day to day stock operations
- *   MANAGER  - inventory manager, reports, approvals
- *   OFFICER  - purchase officer, POs and suppliers
- *   ADMIN    - full system access
- */
 @Entity
 @Table(name = "users")
 @Data
@@ -23,30 +14,25 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class User {
 
-    // Auto-generated primary key
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private int userId;
 
-    // Full display name of the user
     @Column(nullable = false)
     private String fullName;
 
-    // Email is the login identifier - must be unique across all users
     @Column(unique = true, nullable = false)
     private String email;
 
-    // Stored as BCrypt hash - NEVER store plain text passwords
+    // Stored as a BCrypt hash; plain text passwords are never persisted
     @Column(nullable = false)
     private String passwordHash;
 
     private String phone;
 
-    // One of: STAFF, MANAGER, OFFICER, ADMIN
     @Column(nullable = false)
     private String role;
 
-    // Department the user belongs to (e.g. "Warehouse A", "Procurement")
     private String department;
 
     // Soft delete flag - deactivated users cannot login but records are kept
@@ -60,7 +46,10 @@ public class User {
     // Updated every time user successfully logs in
     private LocalDateTime lastLoginAt;
 
-    // Runs before INSERT - sets createdAt automatically
+    private String resetPasswordTokenHash;
+
+    private LocalDateTime resetPasswordTokenExpiresAt;
+
     @PrePersist
     public void prePersist() {
         this.createdAt = LocalDateTime.now();

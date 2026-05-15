@@ -4,8 +4,6 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 
-// @EnableDiscoveryClient registers this service with Eureka
-// so other services can find it by name "auth-service"
 @SpringBootApplication
 @EnableDiscoveryClient
 public class AuthServiceApplication {

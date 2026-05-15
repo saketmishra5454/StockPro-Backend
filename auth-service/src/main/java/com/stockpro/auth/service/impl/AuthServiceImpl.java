@@ -5,44 +5,50 @@ import com.stockpro.auth.repository.UserRepository;
 import com.stockpro.auth.service.AuthService;
 import com.stockpro.auth.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.MailException;
+import org.springframework.mail.SimpleMailMessage;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.List;
 
-/**
- * AuthServiceImpl - the actual business logic implementation.
- *
- * @RequiredArgsConstructor from Lombok generates a constructor with all
- * final fields - this is constructor injection (preferred over @Autowired).
- */
 @Service
 @RequiredArgsConstructor
 public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;  // BCryptPasswordEncoder from SecurityConfig
+    private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
+    private final JavaMailSender mailSender;
 
-    /**
-     * Register a new user.
-     * Steps:
-     * 1. Check if email already exists - throw exception if it does
-     * 2. Hash the plain-text password using BCrypt
-     * 3. Save user to database
-     */
+    @Value("${stockpro.frontend.reset-password-url}")
+    private String resetPasswordUrl;
+
+    @Value("${stockpro.mail.from}")
+    private String mailFrom;
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final int RESET_TOKEN_BYTES = 32;
+    private static final int RESET_TOKEN_MINUTES = 30;
+
+
     @Override
     public User register(User user) {
-        // Check duplicate email
         if (userRepository.existsByEmail(user.getEmail())) {
             throw new RuntimeException("Email already registered: " + user.getEmail());
         }
 
-        // Hash the password before saving - NEVER save plain text
+        // Persist only the password hash
         user.setPasswordHash(passwordEncoder.encode(user.getPasswordHash()));
 
-        // Default role to STAFF if not provided
         if (user.getRole() == null || user.getRole().isEmpty()) {
             user.setRole("STAFF");
         }
@@ -50,68 +56,74 @@ public class AuthServiceImpl implements AuthService {
         return userRepository.save(user);
     }
 
-    /**
-     * Login - verify credentials and return a JWT token.
-     * Steps:
-     * 1. Find user by email - throw if not found
-     * 2. Check if account is active
-     * 3. Verify password against stored BCrypt hash
-     * 4. Update lastLoginAt timestamp
-     * 5. Generate and return JWT token
-     */
+
     @Override
     public String login(String email, String password) {
-        // Find user by email
         User user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new RuntimeException("No account found with email: " + email));
 
-        // Check if account is active
         if (!user.isActive()) {
             throw new RuntimeException("Account is deactivated. Contact your administrator.");
         }
 
-        // Verify password - BCrypt compares plain text against the stored hash
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
             throw new RuntimeException("Incorrect password.");
         }
 
-        // Update last login timestamp
+        // Last login is an audit field, not part of token state
         user.setLastLoginAt(LocalDateTime.now());
         userRepository.save(user);
 
-        // Generate JWT token with userId, email, role as claims
         return jwtUtil.generateToken(user.getUserId(), user.getEmail(), user.getRole());
     }
 
-    /**
-     * Validate a JWT token.
-     * Returns true if token is valid and not expired.
-     * Returns false if token is invalid, expired, or tampered with.
-     */
+
     @Override
     public boolean validateToken(String token) {
         return jwtUtil.isTokenValid(token);
     }
 
-    /**
-     * Get a user by their ID.
-     * Throws RuntimeException if user not found (you can replace with custom exception).
-     */
+    @Override
+    public String refreshToken(String token) {
+        if (token == null || token.isBlank()) {
+            throw new RuntimeException("Refresh token is required.");
+        }
+        if (!jwtUtil.isTokenValid(token)) {
+            throw new RuntimeException("Token is invalid or expired.");
+        }
+
+        int userId = jwtUtil.extractUserId(token);
+        User user = getUserById(userId);
+        if (!user.isActive()) {
+            throw new RuntimeException("Account is deactivated. Contact your administrator.");
+        }
+
+        return jwtUtil.generateToken(user.getUserId(), user.getEmail(), user.getRole());
+    }
+
+    @Override
+    public void logout(String token) {
+        if (token == null || token.isBlank()) {
+            throw new RuntimeException("Token is required.");
+        }
+        if (!jwtUtil.isTokenValid(token)) {
+            throw new RuntimeException("Token is invalid or expired.");
+        }
+    }
+
+
     @Override
     public User getUserById(int userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found with ID: " + userId));
     }
 
-    /**
-     * Update user profile - only allows changing safe fields.
-     * Email, password, and role cannot be changed here (separate endpoints for those).
-     */
+
     @Override
     public User updateProfile(int userId, User updatedUser) {
         User existing = getUserById(userId);
 
-        // Only update allowed profile fields
+        // Keep role, password, and account status out of profile updates
         if (updatedUser.getFullName() != null) {
             existing.setFullName(updatedUser.getFullName());
         }
@@ -125,23 +137,127 @@ public class AuthServiceImpl implements AuthService {
         return userRepository.save(existing);
     }
 
-    /**
-     * Change password.
-     * Takes plain-text new password, hashes it, then saves.
-     */
+
     @Override
     public void changePassword(int userId, String newPassword) {
         User user = getUserById(userId);
-        // Hash the new password before storing
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         userRepository.save(user);
     }
 
-    /**
-     * Deactivate user - soft delete.
-     * Sets isActive = false. The user record stays in the database.
-     * The user will not be able to login anymore.
-     */
+    @Override
+    public void requestPasswordReset(String email) {
+        if (email == null || email.isBlank()) {
+            throw new RuntimeException("Email is required.");
+        }
+
+        userRepository.findByEmail(email)
+                .filter(User::isActive)
+                .ifPresent(this::sendPasswordResetEmail);
+    }
+
+    @Override
+    public void resetPasswordWithToken(String token, String newPassword) {
+        if (token == null || token.isBlank()) {
+            throw new RuntimeException("Reset token is required.");
+        }
+
+        if (newPassword == null || newPassword.length() < 8) {
+            throw new RuntimeException("Password must be at least 8 characters.");
+        }
+
+        User user = userRepository.findByResetPasswordTokenHash(hashToken(token))
+                .orElseThrow(() -> new RuntimeException("Password reset link is invalid or expired."));
+
+        if (!user.isActive()) {
+            throw new RuntimeException("Account is deactivated. Contact your administrator.");
+        }
+
+        if (user.getResetPasswordTokenExpiresAt() == null ||
+                LocalDateTime.now().isAfter(user.getResetPasswordTokenExpiresAt())) {
+            clearResetToken(user);
+            userRepository.save(user);
+            throw new RuntimeException("Password reset link is invalid or expired.");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        clearResetToken(user);
+        userRepository.save(user);
+    }
+
+    @Override
+    public void resetPassword(String email, String newPassword) {
+        if (email == null || email.isBlank()) {
+            throw new RuntimeException("Email is required.");
+        }
+
+        if (newPassword == null || newPassword.length() < 8) {
+            throw new RuntimeException("Password must be at least 8 characters.");
+        }
+
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("No account found with email: " + email));
+
+        if (!user.isActive()) {
+            throw new RuntimeException("Account is deactivated. Contact your administrator.");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        clearResetToken(user);
+        userRepository.save(user);
+    }
+
+    private void sendPasswordResetEmail(User user) {
+        String token = generateToken();
+        user.setResetPasswordTokenHash(hashToken(token));
+        user.setResetPasswordTokenExpiresAt(LocalDateTime.now().plusMinutes(RESET_TOKEN_MINUTES));
+        userRepository.save(user);
+
+        String resetLink = resetPasswordUrl + "?token=" + token;
+        SimpleMailMessage message = new SimpleMailMessage();
+        message.setFrom(mailFrom);
+        message.setTo(user.getEmail());
+        message.setSubject("Reset your StockPro password");
+        message.setText("""
+                We received a request to reset your StockPro password.
+
+                Open this link to choose a new password:
+                %s
+
+                This link expires in %d minutes. If you did not request this, you can ignore this email.
+                """.formatted(resetLink, RESET_TOKEN_MINUTES));
+
+        try {
+            mailSender.send(message);
+        } catch (MailException ex) {
+            clearResetToken(user);
+            userRepository.save(user);
+            throw new IllegalStateException("Password reset email could not be sent. Check SMTP configuration.", ex);
+        }
+    }
+
+    private String generateToken() {
+        byte[] bytes = new byte[RESET_TOKEN_BYTES];
+        SECURE_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private String hashToken(String token) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(token.getBytes(StandardCharsets.UTF_8));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("Password reset token hashing is unavailable.", ex);
+        }
+    }
+
+    private void clearResetToken(User user) {
+        user.setResetPasswordTokenHash(null);
+        user.setResetPasswordTokenExpiresAt(null);
+    }
+
+
     @Override
     public void deactivateUser(int userId) {
         User user = getUserById(userId);
@@ -149,9 +265,7 @@ public class AuthServiceImpl implements AuthService {
         userRepository.save(user);
     }
 
-    /**
-     * Activate user - restores access after a soft delete.
-     */
+
     @Override
     public void activateUser(int userId) {
         User user = getUserById(userId);
@@ -159,10 +273,7 @@ public class AuthServiceImpl implements AuthService {
         userRepository.save(user);
     }
 
-    /**
-     * Get all users - typically called by Admin only.
-     * The role check (ADMIN) is done in the controller layer.
-     */
+
     @Override
     public List<User> getAllUsers() {
         return userRepository.findAll();

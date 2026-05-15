@@ -26,38 +26,43 @@
 
     <dependencies>
 
-        <!-- Spring Web - for REST controllers -->
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- Spring Data JPA - for repositories and DB access -->
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
-        <!-- Spring Security - for BCryptPasswordEncoder -->
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
-        <!-- PostgreSQL Driver - FIXED: was MySQL in old file -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
+
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Eureka Client - registers this service with Eureka server -->
+
         <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
 
-        <!-- Lombok - reduces boilerplate (@Data, @NoArgsConstructor etc) -->
+
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
@@ -65,7 +70,7 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- jjwt 0.12.x - FIXED: was 0.11.5 in old file, API changed in 0.12 -->
+
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
@@ -84,7 +89,7 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Test -->
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
@@ -93,7 +98,7 @@
 
     </dependencies>
 
-    <!-- Spring Cloud BOM - manages all spring-cloud dependency versions -->
+
     <dependencyManagement>
         <dependencies>
             <dependency>
