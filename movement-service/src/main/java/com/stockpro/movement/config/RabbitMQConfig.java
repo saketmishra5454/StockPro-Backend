@@ -12,8 +12,8 @@ import org.springframework.context.annotation.Configuration;
 public class RabbitMQConfig {
 
     public static final String QUEUE = "stock.movement.queue";
-    public static final String EXCHANGE = "stock.exchange";
-    public static final String ROUTING_KEY = "stock.movement.key";
+    public static final String EXCHANGE = "stockpro.exchange";
+    public static final String ROUTING_KEY = "stock.movement.#";
 
     @Bean
     public Queue stockMovementQueue() {
@@ -22,7 +22,7 @@ public class RabbitMQConfig {
 
     @Bean
     public TopicExchange exchange() {
-        return new TopicExchange(EXCHANGE);
+        return new TopicExchange(EXCHANGE, true, false);
     }
 
     @Bean

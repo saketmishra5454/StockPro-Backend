@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 
 import java.util.List;
 
-@FeignClient(name = "movement-service")
+@FeignClient(name = "movement-service", fallbackFactory = MovementClientFallbackFactory.class)
 public interface MovementClient {
 
 

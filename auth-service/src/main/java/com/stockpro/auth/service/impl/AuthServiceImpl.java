@@ -1,6 +1,7 @@
 package com.stockpro.auth.service.impl;
 
 import com.stockpro.auth.entity.User;
+import com.stockpro.auth.service.JwtBlacklistService;
 import com.stockpro.auth.repository.UserRepository;
 import com.stockpro.auth.service.AuthService;
 import com.stockpro.auth.util.JwtUtil;
@@ -28,6 +29,7 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
     private final JavaMailSender mailSender;
+    private final JwtBlacklistService jwtBlacklistService;
 
     @Value("${stockpro.frontend.reset-password-url}")
     private String resetPasswordUrl;
@@ -80,7 +82,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public boolean validateToken(String token) {
-        return jwtUtil.isTokenValid(token);
+        return jwtUtil.isTokenValid(token) && !jwtBlacklistService.isBlacklisted(token);
     }
 
     @Override
@@ -88,7 +90,7 @@ public class AuthServiceImpl implements AuthService {
         if (token == null || token.isBlank()) {
             throw new RuntimeException("Refresh token is required.");
         }
-        if (!jwtUtil.isTokenValid(token)) {
+        if (!validateToken(token)) {
             throw new RuntimeException("Token is invalid or expired.");
         }
 
@@ -109,6 +111,7 @@ public class AuthServiceImpl implements AuthService {
         if (!jwtUtil.isTokenValid(token)) {
             throw new RuntimeException("Token is invalid or expired.");
         }
+        jwtBlacklistService.blacklist(token);
     }
 
 

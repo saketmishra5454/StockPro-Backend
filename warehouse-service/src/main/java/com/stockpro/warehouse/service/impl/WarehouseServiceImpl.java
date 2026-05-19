@@ -9,6 +9,10 @@ import com.stockpro.warehouse.service.WarehouseService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.CachePut;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,26 +33,38 @@ public class WarehouseServiceImpl implements WarehouseService {
     private static final String ALERT_KEY       = "stock.alert.lowstock";
 
     @Override
+    @Caching(
+            put = @CachePut(cacheNames = "warehouseById", key = "#result.warehouseId"),
+            evict = @CacheEvict(cacheNames = "warehousesAll", allEntries = true)
+    )
     public Warehouse createWarehouse(Warehouse warehouse) {
         validateWarehouse(warehouse);
         if (warehouseRepository.existsByName(warehouse.getName())) {
             throw new RuntimeException("Warehouse with name '" + warehouse.getName() + "' already exists.");
         }
+        warehouse.setUsedCapacity(0);
         return warehouseRepository.save(warehouse);
     }
 
     @Override
     public Warehouse getWarehouseById(int warehouseId) {
-        return warehouseRepository.findById(warehouseId)
+        Warehouse warehouse = warehouseRepository.findById(warehouseId)
                 .orElseThrow(() -> new RuntimeException("Warehouse not found: " + warehouseId));
+        return syncWarehouseCapacity(warehouse);
     }
 
     @Override
     public List<Warehouse> getAllWarehouses() {
-        return warehouseRepository.findAll();
+        return warehouseRepository.findAll().stream()
+                .map(this::syncWarehouseCapacity)
+                .toList();
     }
 
     @Override
+    @Caching(
+            put = @CachePut(cacheNames = "warehouseById", key = "#warehouseId"),
+            evict = @CacheEvict(cacheNames = "warehousesAll", allEntries = true)
+    )
     public Warehouse updateWarehouse(int warehouseId, Warehouse updated) {
         Warehouse existing = getWarehouseById(warehouseId);
 
@@ -63,6 +79,10 @@ public class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "warehouseById", key = "#warehouseId"),
+            @CacheEvict(cacheNames = "warehousesAll", allEntries = true)
+    })
     public void deactivateWarehouse(int warehouseId) {
         Warehouse warehouse = getWarehouseById(warehouseId);
         warehouse.setActive(false);
@@ -70,6 +90,10 @@ public class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "warehouseById", key = "#warehouseId"),
+            @CacheEvict(cacheNames = "warehousesAll", allEntries = true)
+    })
     public void activateWarehouse(int warehouseId) {
         Warehouse warehouse = getWarehouseById(warehouseId);
         warehouse.setActive(true);
@@ -77,6 +101,7 @@ public class WarehouseServiceImpl implements WarehouseService {
     }
 
     @Override
+    @Cacheable(cacheNames = "stockLevel", key = "#warehouseId + ':' + #productId")
     public StockLevel getStockLevel(int warehouseId, int productId) {
         return stockLevelRepository.findByWarehouseIdAndProductId(warehouseId, productId)
                 .orElseThrow(() -> new RuntimeException(
@@ -87,9 +112,18 @@ public class WarehouseServiceImpl implements WarehouseService {
 
     @Override
     @Transactional
+    @Caching(
+            put = @CachePut(cacheNames = "stockLevel", key = "#warehouseId + ':' + #productId"),
+            evict = {
+                    @CacheEvict(cacheNames = "stockLow", allEntries = true),
+                    @CacheEvict(cacheNames = "stockByWarehouse", allEntries = true),
+                    @CacheEvict(cacheNames = "stockAll", allEntries = true)
+            }
+    )
     public StockLevel initializeStock(int warehouseId, int productId, int initialQuantity) {
         validateStockInput(warehouseId, productId, initialQuantity);
-        getWarehouseById(warehouseId);
+        Warehouse warehouse = getWarehouseById(warehouseId);
+        ensureCapacityAvailable(warehouse, initialQuantity);
 
         if (stockLevelRepository.existsByWarehouseIdAndProductId(warehouseId, productId)) {
             throw new RuntimeException(
@@ -103,12 +137,22 @@ public class WarehouseServiceImpl implements WarehouseService {
         sl.setQuantity(initialQuantity);
         sl.setReservedQuantity(0);
 
-        return stockLevelRepository.save(sl);
+        StockLevel saved = stockLevelRepository.save(sl);
+        syncWarehouseCapacity(warehouseId);
+        return saved;
     }
 
 
     @Override
     @Transactional
+    @Caching(
+            put = @CachePut(cacheNames = "stockLevel", key = "#warehouseId + ':' + #productId"),
+            evict = {
+                    @CacheEvict(cacheNames = "stockLow", allEntries = true),
+                    @CacheEvict(cacheNames = "stockByWarehouse", allEntries = true),
+                    @CacheEvict(cacheNames = "stockAll", allEntries = true)
+            }
+    )
     public StockLevel updateStock(int warehouseId, int productId, int delta) {
         if (warehouseId <= 0 || productId <= 0) {
             throw new IllegalArgumentException("Warehouse and product are required.");
@@ -116,7 +160,7 @@ public class WarehouseServiceImpl implements WarehouseService {
         if (delta == 0) {
             throw new IllegalArgumentException("Stock delta cannot be zero.");
         }
-        getWarehouseById(warehouseId);
+        Warehouse warehouse = getWarehouseById(warehouseId);
 
         StockLevel sl = stockLevelRepository
                 .findByWarehouseIdAndProductId(warehouseId, productId)
@@ -133,6 +177,10 @@ public class WarehouseServiceImpl implements WarehouseService {
         int previousQuantity = sl.getQuantity();
         int newQuantity = previousQuantity + delta;
 
+        if (delta > 0) {
+            ensureCapacityAvailable(warehouse, delta);
+        }
+
         if (newQuantity < 0) {
             throw new RuntimeException(
                     "Insufficient stock. Available: " + sl.getAvailableQuantity() +
@@ -147,6 +195,7 @@ public class WarehouseServiceImpl implements WarehouseService {
 
         sl.setQuantity(newQuantity);
         StockLevel saved = stockLevelRepository.save(sl);
+        syncWarehouseCapacity(warehouseId);
 
         String movementType = delta > 0 ? "STOCK_IN" : "STOCK_OUT";
 
@@ -166,6 +215,14 @@ public class WarehouseServiceImpl implements WarehouseService {
 
     @Override
     @Transactional
+    @Caching(
+            put = @CachePut(cacheNames = "stockLevel", key = "#warehouseId + ':' + #productId"),
+            evict = {
+                    @CacheEvict(cacheNames = "stockLow", allEntries = true),
+                    @CacheEvict(cacheNames = "stockByWarehouse", allEntries = true),
+                    @CacheEvict(cacheNames = "stockAll", allEntries = true)
+            }
+    )
     public StockLevel reserveStock(int warehouseId, int productId, int quantity) {
         if (quantity <= 0) {
             throw new IllegalArgumentException("Reservation quantity must be greater than 0.");
@@ -189,6 +246,14 @@ public class WarehouseServiceImpl implements WarehouseService {
 
     @Override
     @Transactional
+    @Caching(
+            put = @CachePut(cacheNames = "stockLevel", key = "#warehouseId + ':' + #productId"),
+            evict = {
+                    @CacheEvict(cacheNames = "stockLow", allEntries = true),
+                    @CacheEvict(cacheNames = "stockByWarehouse", allEntries = true),
+                    @CacheEvict(cacheNames = "stockAll", allEntries = true)
+            }
+    )
     public StockLevel releaseReservation(int warehouseId, int productId, int quantity) {
         if (quantity <= 0) {
             throw new IllegalArgumentException("Release quantity must be greater than 0.");
@@ -209,9 +274,15 @@ public class WarehouseServiceImpl implements WarehouseService {
 
     @Override
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "stockLevel", allEntries = true),
+            @CacheEvict(cacheNames = "stockLow", allEntries = true),
+            @CacheEvict(cacheNames = "stockByWarehouse", allEntries = true),
+            @CacheEvict(cacheNames = "stockAll", allEntries = true)
+    })
     public void transferStock(int fromWarehouseId, int toWarehouseId, int productId, int quantity) {
         getWarehouseById(fromWarehouseId);
-        getWarehouseById(toWarehouseId);
+        Warehouse destinationWarehouse = getWarehouseById(toWarehouseId);
 
         if (fromWarehouseId == toWarehouseId) {
             throw new RuntimeException("Source and destination warehouse cannot be the same.");
@@ -220,6 +291,7 @@ public class WarehouseServiceImpl implements WarehouseService {
         if (quantity <= 0) {
             throw new RuntimeException("Transfer quantity must be greater than 0.");
         }
+        ensureCapacityAvailable(destinationWarehouse, quantity);
 
         StockLevel source = getStockLevel(fromWarehouseId, productId);
         if (source.getAvailableQuantity() < quantity) {
@@ -248,6 +320,8 @@ public class WarehouseServiceImpl implements WarehouseService {
         int destPrevQty = destination.getQuantity();
         destination.setQuantity(destination.getQuantity() + quantity);
         stockLevelRepository.save(destination);
+        syncWarehouseCapacity(fromWarehouseId);
+        syncWarehouseCapacity(toWarehouseId);
 
         StockMovementEvent transferOut = new StockMovementEvent(
                 productId, fromWarehouseId, "TRANSFER_OUT",
@@ -269,16 +343,19 @@ public class WarehouseServiceImpl implements WarehouseService {
 
 
     @Override
+    @Cacheable(cacheNames = "stockLow", key = "'low'")
     public List<StockLevel> getLowStockItems() {
         return stockLevelRepository.findAllLowStock();
     }
 
     @Override
+    @Cacheable(cacheNames = "stockByWarehouse", key = "#warehouseId")
     public List<StockLevel> getStockByWarehouse(int warehouseId) {
         return stockLevelRepository.findByWarehouseId(warehouseId);
     }
 
     @Override
+    @Cacheable(cacheNames = "stockAll", key = "'all'")
     public List<StockLevel> getAllStockLevels() {
         return stockLevelRepository.findAll();
     }
@@ -331,6 +408,36 @@ public class WarehouseServiceImpl implements WarehouseService {
         }
         if (quantity < 0) {
             throw new IllegalArgumentException("Initial quantity cannot be negative.");
+        }
+    }
+
+    private Warehouse syncWarehouseCapacity(int warehouseId) {
+        Warehouse warehouse = warehouseRepository.findById(warehouseId)
+                .orElseThrow(() -> new RuntimeException("Warehouse not found: " + warehouseId));
+        return syncWarehouseCapacity(warehouse);
+    }
+
+    private Warehouse syncWarehouseCapacity(Warehouse warehouse) {
+        int usedCapacity = stockLevelRepository.sumQuantityByWarehouseId(warehouse.getWarehouseId());
+        if (warehouse.getUsedCapacity() != usedCapacity) {
+            warehouse.setUsedCapacity(usedCapacity);
+            return warehouseRepository.save(warehouse);
+        }
+        return warehouse;
+    }
+
+    private void ensureCapacityAvailable(Warehouse warehouse, int incomingQuantity) {
+        if (incomingQuantity <= 0 || warehouse.getCapacity() <= 0) {
+            return;
+        }
+
+        int currentUsedCapacity = stockLevelRepository.sumQuantityByWarehouseId(warehouse.getWarehouseId());
+        int projectedCapacity = currentUsedCapacity + incomingQuantity;
+        if (projectedCapacity > warehouse.getCapacity()) {
+            throw new RuntimeException(
+                    "Warehouse capacity exceeded. Used: " + currentUsedCapacity +
+                            ", Incoming: " + incomingQuantity +
+                            ", Capacity: " + warehouse.getCapacity());
         }
     }
 }

@@ -6,6 +6,7 @@ import com.stockpro.alert.dto.WarehouseDto;
 import com.stockpro.alert.feign.ProductClient;
 import com.stockpro.alert.feign.WarehouseClient;
 import com.stockpro.alert.service.AlertService;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -22,6 +23,7 @@ public class LowStockScheduler {
     private final ProductClient productClient;
     private final AlertService alertService;
 
+    @CircuitBreaker(name = "warehouseService", fallbackMethod = "schedulerFallback")
     @Scheduled(fixedRate = 900000)
     public void checkStockHealth() {
         log.info("Running scheduled stock-health check...");
@@ -103,5 +105,9 @@ public class LowStockScheduler {
         } catch (Exception e) {
             log.warn("Low-stock fallback check also failed: {}", e.getMessage());
         }
+    }
+
+    public void schedulerFallback(Exception ex) {
+        log.error("Warehouse-service unavailable for low-stock check: {}", ex.getMessage());
     }
 }

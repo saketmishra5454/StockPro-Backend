@@ -11,8 +11,12 @@ import com.stockpro.report.feign.ProductClient;
 import com.stockpro.report.feign.WarehouseClient;
 import com.stockpro.report.repository.ReportRepository;
 import com.stockpro.report.service.ReportService;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,12 +41,21 @@ public class ReportServiceImpl implements ReportService {
 
     @Override
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "latestSnapshot", key = "#warehouseId"),
+            @CacheEvict(cacheNames = "stockValue", allEntries = true),
+            @CacheEvict(cacheNames = "stock-value-total", allEntries = true),
+            @CacheEvict(cacheNames = "low-stock-report", allEntries = true),
+            @CacheEvict(cacheNames = "top-moving", allEntries = true),
+            @CacheEvict(cacheNames = "inventoryTurnover", allEntries = true),
+            @CacheEvict(cacheNames = "deadStock", allEntries = true)
+    })
     public void takeSnapshot(int warehouseId) {
         log.info("Taking snapshot for warehouse {}", warehouseId);
 
         List<StockLevelDto> stockLevels;
         try {
-            stockLevels = warehouseClient.getStockByWarehouse(warehouseId);
+            stockLevels = fetchWarehouseStock(warehouseId);
         } catch (Exception e) {
             log.error("Failed to fetch stock for warehouse {}: {}", warehouseId, e.getMessage());
             return;
@@ -61,7 +74,7 @@ public class ReportServiceImpl implements ReportService {
 
             double costPrice = 0.0;
             try {
-                ProductDto product = productClient.getProductById(sl.getProductId());
+                ProductDto product = fetchProduct(sl.getProductId());
                 costPrice = product.getCostPrice();
             } catch (Exception e) {
                 log.warn("Could not fetch product {} for snapshot: {}",
@@ -85,6 +98,15 @@ public class ReportServiceImpl implements ReportService {
     }
 
     @Override
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "latestSnapshot", allEntries = true),
+            @CacheEvict(cacheNames = "stockValue", allEntries = true),
+            @CacheEvict(cacheNames = "stock-value-total", allEntries = true),
+            @CacheEvict(cacheNames = "low-stock-report", allEntries = true),
+            @CacheEvict(cacheNames = "top-moving", allEntries = true),
+            @CacheEvict(cacheNames = "inventoryTurnover", allEntries = true),
+            @CacheEvict(cacheNames = "deadStock", allEntries = true)
+    })
     public void takeSnapshotAllWarehouses() {
         log.info("Taking daily snapshot for all warehouses...");
 
@@ -106,7 +128,7 @@ public class ReportServiceImpl implements ReportService {
 
     private List<Integer> loadWarehouseIdsForSnapshot() {
         try {
-            List<WarehouseDto> warehouses = warehouseClient.getAllWarehouses();
+            List<WarehouseDto> warehouses = fetchAllWarehouses();
             if (warehouses != null && !warehouses.isEmpty()) {
                 return warehouses.stream()
                         .map(WarehouseDto::getWarehouseId)
@@ -119,7 +141,7 @@ public class ReportServiceImpl implements ReportService {
         }
 
         try {
-            List<StockLevelDto> stockLevels = warehouseClient.getAllStockLevels();
+            List<StockLevelDto> stockLevels = fetchAllStockLevels();
             if (stockLevels != null && !stockLevels.isEmpty()) {
                 return stockLevels.stream()
                         .map(StockLevelDto::getWarehouseId)
@@ -135,6 +157,7 @@ public class ReportServiceImpl implements ReportService {
     }
 
     @Override
+    @Cacheable(cacheNames = "latestSnapshot", key = "#warehouseId")
     public List<InventorySnapshot> getLatestSnapshot(int warehouseId) {
         return reportRepository.findByWarehouseId(warehouseId).stream()
                 .filter(s -> s.getSnapshotDate().equals(LocalDate.now()))
@@ -142,6 +165,7 @@ public class ReportServiceImpl implements ReportService {
     }
 
     @Override
+    @Cacheable(value = "stock-value-total", unless = "#result == 0.0")
     public double getTotalStockValue() {
         Double total = reportRepository.sumTotalStockValue();
         return total != null ? total : 0.0;
@@ -149,6 +173,7 @@ public class ReportServiceImpl implements ReportService {
 
 
     @Override
+    @Cacheable(cacheNames = "stockValue", key = "'warehouse:' + #warehouseId")
     public double getStockValueByWarehouse(int warehouseId) {
         Double value = reportRepository.sumStockValueByWarehouse(warehouseId);
         return value != null ? value : 0.0;
@@ -157,6 +182,7 @@ public class ReportServiceImpl implements ReportService {
      // Inventory Turnover Rate = COGS / Average Inventory Value
 
     @Override
+    @Cacheable(cacheNames = "inventoryTurnover", key = "#warehouseId + ':' + #from + ':' + #to")
     public double getInventoryTurnover(int warehouseId, LocalDate from, LocalDate to) {
         double cogs = 0.0;
         try {
@@ -164,7 +190,7 @@ public class ReportServiceImpl implements ReportService {
             String toStr = to.atTime(23, 59, 59).format(DT_FORMATTER);
 
             List<StockMovementDto> movements =
-                    movementClient.getMovementsByDateRange(fromStr, toStr);
+                    fetchMovements(fromStr, toStr);
 
             // COGS = sum of STOCK_OUT value only (not transfers or adjustments)
             cogs = movements.stream()
@@ -192,11 +218,12 @@ public class ReportServiceImpl implements ReportService {
     }
 
     @Override
+    @Cacheable(value = "low-stock-report")
     public List<Map<String, Object>> getLowStockReport() {
         List<Map<String, Object>> report = new ArrayList<>();
 
         try {
-            List<StockLevelDto> lowStockItems = warehouseClient.getLowStockItems();
+            List<StockLevelDto> lowStockItems = fetchLowStockItems();
 
             for (StockLevelDto item : lowStockItems) {
                 Map<String, Object> row = new LinkedHashMap<>();
@@ -207,7 +234,7 @@ public class ReportServiceImpl implements ReportService {
                 row.put("availableQuantity", item.getQuantity() - item.getReservedQuantity());
 
                 try {
-                    ProductDto product = productClient.getProductById(item.getProductId());
+                    ProductDto product = fetchProduct(item.getProductId());
                     row.put("productName", product.getName());
                     row.put("sku", product.getSku());
                     row.put("reorderLevel", product.getReorderLevel());
@@ -227,22 +254,26 @@ public class ReportServiceImpl implements ReportService {
     }
 
     @Override
+    @Cacheable(value = "top-moving", key = "#limit")
     public List<ProductMovementSummary> getTopMovingProducts(int limit) {
         return buildMovementRanking(limit, false);
     }
 
     @Override
+    @Cacheable(cacheNames = "movementRanking", key = "'slow:' + #limit")
     public List<ProductMovementSummary> getSlowMovingProducts(int limit) {
         return buildMovementRanking(limit, true);
     }
 
     @Override
+    @Cacheable(cacheNames = "deadStock", key = "'90d'")
     public List<InventorySnapshot> getDeadStock() {
         LocalDate cutoff = LocalDate.now().minusDays(90);
         return reportRepository.findSlowMovingStock(cutoff);
     }
 
     @Override
+    @Cacheable(cacheNames = "poSummary", key = "#from + ':' + #to")
     public Map<String, Object> getPOSummary(LocalDate from, LocalDate to) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("periodFrom", from.toString());
@@ -253,7 +284,7 @@ public class ReportServiceImpl implements ReportService {
             String toStr = to.atTime(23, 59, 59).format(DT_FORMATTER);
 
             List<StockMovementDto> movements =
-                    movementClient.getMovementsByDateRange(fromStr, toStr);
+                    fetchMovements(fromStr, toStr);
 
             List<StockMovementDto> stockInMovements = movements.stream()
                     .filter(m -> "STOCK_IN".equals(m.getMovementType()))
@@ -286,11 +317,85 @@ public class ReportServiceImpl implements ReportService {
         return summary;
     }
 
+    @CircuitBreaker(name = "warehouseService", fallbackMethod = "warehouseFallback")
+    private List<StockLevelDto> fetchWarehouseStock(int warehouseId) {
+        return warehouseClient.getStockByWarehouse(warehouseId);
+    }
+
+    private List<StockLevelDto> warehouseFallback(int warehouseId, Exception ex) {
+        log.warn("Warehouse-service down during snapshot for warehouse {}", warehouseId);
+        return Collections.emptyList();
+    }
+
+    @CircuitBreaker(name = "warehouseService", fallbackMethod = "allWarehousesFallback")
+    private List<WarehouseDto> fetchAllWarehouses() {
+        return warehouseClient.getAllWarehouses();
+    }
+
+    private List<WarehouseDto> allWarehousesFallback(Exception ex) {
+        log.warn("Warehouse-service down while loading warehouses for reporting.");
+        return Collections.emptyList();
+    }
+
+    @CircuitBreaker(name = "warehouseService", fallbackMethod = "allStockLevelsFallback")
+    private List<StockLevelDto> fetchAllStockLevels() {
+        return warehouseClient.getAllStockLevels();
+    }
+
+    private List<StockLevelDto> allStockLevelsFallback(Exception ex) {
+        log.warn("Warehouse-service down while loading stock levels for reporting.");
+        return Collections.emptyList();
+    }
+
+    @CircuitBreaker(name = "warehouseService", fallbackMethod = "lowStockFallback")
+    private List<StockLevelDto> fetchLowStockItems() {
+        return warehouseClient.getLowStockItems();
+    }
+
+    private List<StockLevelDto> lowStockFallback(Exception ex) {
+        log.warn("Warehouse-service down during low-stock report.");
+        return Collections.emptyList();
+    }
+
+    @CircuitBreaker(name = "productService", fallbackMethod = "productFallback")
+    private ProductDto fetchProduct(int productId) {
+        return productClient.getProductById(productId);
+    }
+
+    private ProductDto productFallback(int productId, Exception ex) {
+        log.warn("Product-service down, skipping product {}", productId);
+        ProductDto empty = new ProductDto();
+        empty.setProductId(productId);
+        empty.setName("Unknown-" + productId);
+        empty.setCostPrice(0.0);
+        return empty;
+    }
+
+    @CircuitBreaker(name = "productService", fallbackMethod = "allProductsFallback")
+    private List<ProductDto> fetchAllProducts() {
+        return productClient.getAllProducts();
+    }
+
+    private List<ProductDto> allProductsFallback(Exception ex) {
+        log.warn("Product-service down. Returning empty product list.");
+        return Collections.emptyList();
+    }
+
+    @CircuitBreaker(name = "movementService", fallbackMethod = "movementFallback")
+    private List<StockMovementDto> fetchMovements(String from, String to) {
+        return movementClient.getMovementsByDateRange(from, to);
+    }
+
+    private List<StockMovementDto> movementFallback(String from, String to, Exception ex) {
+        log.warn("Movement-service down. Returning empty movement list.");
+        return Collections.emptyList();
+    }
+
     private List<ProductMovementSummary> buildMovementRanking(int limit, boolean ascending) {
         List<ProductMovementSummary> summaries = new ArrayList<>();
 
         try {
-            List<ProductDto> products = productClient.getAllProducts();
+            List<ProductDto> products = fetchAllProducts();
 
             LocalDate thirtyDaysAgo = LocalDate.now().minusDays(30);
             String fromStr = thirtyDaysAgo.atStartOfDay().format(DT_FORMATTER);
@@ -298,7 +403,7 @@ public class ReportServiceImpl implements ReportService {
 
             List<StockMovementDto> recentMovements;
             try {
-                recentMovements = movementClient.getMovementsByDateRange(fromStr, toStr);
+                recentMovements = fetchMovements(fromStr, toStr);
             } catch (Exception e) {
                 log.warn("Could not fetch movements for ranking: {}", e.getMessage());
                 return summaries;

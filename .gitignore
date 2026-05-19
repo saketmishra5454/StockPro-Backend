@@ -99,6 +99,8 @@ application-dev.yml
 application-dev.properties
 application-secret.yml
 application-secret.properties
+!**/src/main/resources/application-local.properties
+!**/src/main/resources/configs/*-local.properties
 
 # ==================================================
 # Logs

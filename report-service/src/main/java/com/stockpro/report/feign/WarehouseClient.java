@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 
 import java.util.List;
 
-@FeignClient(name = "warehouse-service")
+@FeignClient(name = "warehouse-service", fallbackFactory = WarehouseClientFallbackFactory.class)
 public interface WarehouseClient {
 
     @GetMapping("/api/warehouses")

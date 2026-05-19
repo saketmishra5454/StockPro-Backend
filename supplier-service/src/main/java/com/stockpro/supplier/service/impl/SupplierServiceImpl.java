@@ -5,6 +5,10 @@ import com.stockpro.supplier.repository.SupplierRepository;
 import com.stockpro.supplier.service.SupplierService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.CachePut;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,6 +22,18 @@ public class SupplierServiceImpl implements SupplierService {
     private final SupplierRepository supplierRepository;
 
     @Override
+    @Caching(
+            put = @CachePut(cacheNames = "supplierById", key = "#result.supplierId"),
+            evict = {
+                    @CacheEvict(cacheNames = "suppliers", allEntries = true),
+                    @CacheEvict(cacheNames = "suppliers-all", allEntries = true),
+                    @CacheEvict(cacheNames = "suppliersAll", allEntries = true),
+                    @CacheEvict(cacheNames = "activeSuppliers", allEntries = true),
+                    @CacheEvict(cacheNames = "supplierSearch", allEntries = true),
+                    @CacheEvict(cacheNames = "supplierByCity", allEntries = true),
+                    @CacheEvict(cacheNames = "supplierByCountry", allEntries = true)
+            }
+    )
     public Supplier createSupplier(Supplier supplier) {
         validateSupplier(supplier);
         supplier.setName(supplier.getName().trim());
@@ -42,6 +58,7 @@ public class SupplierServiceImpl implements SupplierService {
     }
 
     @Override
+    @Cacheable(cacheNames = {"supplierById", "suppliers"}, key = "#supplierId")
     public Supplier getById(int supplierId) {
         return supplierRepository.findById(supplierId)
                 .orElseThrow(() -> new RuntimeException(
@@ -49,11 +66,13 @@ public class SupplierServiceImpl implements SupplierService {
     }
 
     @Override
+    @Cacheable(cacheNames = {"suppliersAll", "suppliers-all"}, key = "'all'")
     public List<Supplier> getAllSuppliers() {
         return supplierRepository.findAll();
     }
 
     @Override
+    @Cacheable(cacheNames = "supplierSearch", key = "#name == null ? '' : #name.trim()")
     public List<Supplier> searchSuppliers(String name) {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("Search term is required.");
@@ -63,6 +82,18 @@ public class SupplierServiceImpl implements SupplierService {
 
     @Override
     @Transactional
+    @Caching(
+            put = @CachePut(cacheNames = "supplierById", key = "#supplierId"),
+            evict = {
+                    @CacheEvict(cacheNames = "suppliers", allEntries = true),
+                    @CacheEvict(cacheNames = "suppliers-all", allEntries = true),
+                    @CacheEvict(cacheNames = "suppliersAll", allEntries = true),
+                    @CacheEvict(cacheNames = "activeSuppliers", allEntries = true),
+                    @CacheEvict(cacheNames = "supplierSearch", allEntries = true),
+                    @CacheEvict(cacheNames = "supplierByCity", allEntries = true),
+                    @CacheEvict(cacheNames = "supplierByCountry", allEntries = true)
+            }
+    )
     public Supplier updateSupplier(int supplierId, Supplier updatedSupplier) {
         Supplier existing = getById(supplierId);
 
@@ -114,6 +145,16 @@ public class SupplierServiceImpl implements SupplierService {
 
     @Override
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "suppliers", allEntries = true),
+            @CacheEvict(cacheNames = "suppliers-all", allEntries = true),
+            @CacheEvict(cacheNames = "supplierById", key = "#supplierId"),
+            @CacheEvict(cacheNames = "suppliersAll", allEntries = true),
+            @CacheEvict(cacheNames = "activeSuppliers", allEntries = true),
+            @CacheEvict(cacheNames = "supplierSearch", allEntries = true),
+            @CacheEvict(cacheNames = "supplierByCity", allEntries = true),
+            @CacheEvict(cacheNames = "supplierByCountry", allEntries = true)
+    })
     public void deactivateSupplier(int supplierId) {
         Supplier supplier = getById(supplierId);
         supplier.setActive(false);
@@ -123,6 +164,14 @@ public class SupplierServiceImpl implements SupplierService {
 
     @Override
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "supplierById", key = "#supplierId"),
+            @CacheEvict(cacheNames = "suppliersAll", allEntries = true),
+            @CacheEvict(cacheNames = "activeSuppliers", allEntries = true),
+            @CacheEvict(cacheNames = "supplierSearch", allEntries = true),
+            @CacheEvict(cacheNames = "supplierByCity", allEntries = true),
+            @CacheEvict(cacheNames = "supplierByCountry", allEntries = true)
+    })
     public void activateSupplier(int supplierId) {
         Supplier supplier = getById(supplierId);
         supplier.setActive(true);
@@ -132,6 +181,14 @@ public class SupplierServiceImpl implements SupplierService {
 
     @Override
     @Transactional
+    @Caching(evict = {
+            @CacheEvict(cacheNames = "supplierById", key = "#supplierId"),
+            @CacheEvict(cacheNames = "suppliersAll", allEntries = true),
+            @CacheEvict(cacheNames = "activeSuppliers", allEntries = true),
+            @CacheEvict(cacheNames = "supplierSearch", allEntries = true),
+            @CacheEvict(cacheNames = "supplierByCity", allEntries = true),
+            @CacheEvict(cacheNames = "supplierByCountry", allEntries = true)
+    })
     public void deleteSupplier(int supplierId) {
         if (!supplierRepository.existsById(supplierId)) {
             throw new RuntimeException("Supplier not found with ID: " + supplierId);
@@ -141,17 +198,27 @@ public class SupplierServiceImpl implements SupplierService {
     }
 
     @Override
+    @Cacheable(cacheNames = "supplierByCity", key = "#city == null ? '' : #city.trim()")
     public List<Supplier> getByCity(String city) {
         return supplierRepository.findByCity(city);
     }
 
     @Override
+    @Cacheable(cacheNames = "supplierByCountry", key = "#country == null ? '' : #country.trim()")
     public List<Supplier> getByCountry(String country) {
         return supplierRepository.findByCountry(country);
     }
 
     @Override
     @Transactional
+    @Caching(
+            put = @CachePut(cacheNames = "supplierById", key = "#supplierId"),
+            evict = {
+                    @CacheEvict(cacheNames = "suppliersAll", allEntries = true),
+                    @CacheEvict(cacheNames = "activeSuppliers", allEntries = true),
+                    @CacheEvict(cacheNames = "supplierSearch", allEntries = true)
+            }
+    )
     public Supplier updateRating(int supplierId, double scoreGiven) {
         if (scoreGiven < 1.0 || scoreGiven > 5.0) {
             throw new RuntimeException(
@@ -179,6 +246,7 @@ public class SupplierServiceImpl implements SupplierService {
     }
 
     @Override
+    @Cacheable(cacheNames = "activeSuppliers", key = "'active'")
     public List<Supplier> getActiveSuppliers() {
         return supplierRepository.findByIsActive(true);
     }

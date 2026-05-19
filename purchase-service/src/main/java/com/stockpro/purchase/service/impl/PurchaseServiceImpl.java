@@ -8,6 +8,8 @@ import com.stockpro.purchase.feign.WarehouseClient;
 import com.stockpro.purchase.repository.POLineItemRepository;
 import com.stockpro.purchase.repository.PurchaseRepository;
 import com.stockpro.purchase.service.PurchaseService;
+import feign.FeignException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -184,15 +186,16 @@ public class PurchaseServiceImpl implements PurchaseService {
 
             try {
                 // Receiving goods increases warehouse stock before PO receipt is persisted
-                warehouseClient.updateStock(po.getWarehouseId(),
-                        received.getProductId(), qtyToReceive);
+                updateWarehouseStock(po.getWarehouseId(), received.getProductId(), qtyToReceive);
                 log.info("Stock updated: product={}, warehouse={}, qty=+{}",
                         received.getProductId(), po.getWarehouseId(), qtyToReceive);
             } catch (Exception e) {
+                String failureMessage = warehouseUpdateFailureMessage(e);
                 log.error("Failed to update stock for product {}: {}",
-                        received.getProductId(), e.getMessage());
+                        received.getProductId(), failureMessage);
                 throw new IllegalStateException(
-                        "Could not update warehouse stock for received product " + received.getProductId(), e);
+                        "Could not update warehouse stock for product " +
+                                received.getProductId() + ": " + failureMessage, e);
             }
 
             matchingLine.setReceivedQty(matchingLine.getReceivedQty() + qtyToReceive);
@@ -212,6 +215,16 @@ public class PurchaseServiceImpl implements PurchaseService {
         }
 
         return purchaseRepository.save(po);
+    }
+
+    @CircuitBreaker(name = "warehouseService", fallbackMethod = "stockUpdateFallback")
+    private void updateWarehouseStock(int warehouseId, int productId, int qty) {
+        warehouseClient.updateStock(warehouseId, productId, qty);
+    }
+
+    private void stockUpdateFallback(int warehouseId, int productId, int qty, Exception ex) {
+        log.error("Warehouse-service unavailable. Stock update failed. warehouse={}, product={}, qty={}",
+                warehouseId, productId, qty);
     }
 
     @Override
@@ -297,11 +310,20 @@ public class PurchaseServiceImpl implements PurchaseService {
         try {
             AlertRequest alert = new AlertRequest(
                     recipientId, type, severity, title, message, warehouseId);
-            alertClient.sendAlert(alert);
+            sendAlertWithBreaker(alert);
         } catch (Exception e) {
             // Alert delivery must not block purchase-order state changes
             log.warn("Could not send alert (alert-service may be down): {}", e.getMessage());
         }
+    }
+
+    @CircuitBreaker(name = "alertService", fallbackMethod = "alertFallback")
+    private void sendAlertWithBreaker(AlertRequest alert) {
+        alertClient.sendAlert(alert);
+    }
+
+    private void alertFallback(AlertRequest alert, Exception ex) {
+        log.warn("Alert-service unavailable. Alert skipped: {}", alert.getTitle());
     }
 
     private void validatePurchaseOrderHeader(PurchaseOrder purchaseOrder) {
@@ -333,5 +355,46 @@ public class PurchaseServiceImpl implements PurchaseService {
 
     private String generateReferenceNumber() {
         return "PO-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"));
+    }
+
+    private String warehouseUpdateFailureMessage(Exception exception) {
+        Throwable current = exception;
+        while (current != null) {
+            if (current instanceof FeignException feignException) {
+                String responseBody = feignException.contentUTF8();
+                String message = extractJsonMessage(responseBody);
+                if (message != null && !message.isBlank()) {
+                    return message;
+                }
+                return "warehouse-service returned HTTP " + feignException.status();
+            }
+            current = current.getCause();
+        }
+
+        return exception.getMessage() == null
+                ? "warehouse-service update failed"
+                : exception.getMessage();
+    }
+
+    private String extractJsonMessage(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return null;
+        }
+
+        String marker = "\"message\":\"";
+        int start = responseBody.indexOf(marker);
+        if (start < 0) {
+            return responseBody;
+        }
+
+        start += marker.length();
+        int end = responseBody.indexOf('"', start);
+        if (end < 0) {
+            return responseBody.substring(start);
+        }
+
+        return responseBody.substring(start, end)
+                .replace("\\\"", "\"")
+                .replace("\\n", " ");
     }
 }

@@ -2,6 +2,7 @@ package com.stockpro.auth.service.impl;
 
 import com.stockpro.auth.entity.User;
 import com.stockpro.auth.repository.UserRepository;
+import com.stockpro.auth.service.JwtBlacklistService;
 import com.stockpro.auth.util.JwtUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -35,6 +36,9 @@ class AuthServiceImplTest {
 
     @Mock
     private JavaMailSender mailSender;
+
+    @Mock
+    private JwtBlacklistService jwtBlacklistService;
 
     @InjectMocks
     private AuthServiceImpl authService;
@@ -125,6 +129,7 @@ class AuthServiceImplTest {
     @Test
     void validateTokenDelegatesToJwtUtil() {
         when(jwtUtil.isTokenValid("jwt-token")).thenReturn(true);
+        when(jwtBlacklistService.isBlacklisted("jwt-token")).thenReturn(false);
 
         assertThat(authService.validateToken("jwt-token")).isTrue();
     }
